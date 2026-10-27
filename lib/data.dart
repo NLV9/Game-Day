@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
@@ -281,8 +280,7 @@ final _np = FlutterLocalNotificationsPlugin();
 Future<void> initNotifications() async {
   try {
     tzdata.initializeTimeZones();
-    tz.setLocalLocation(tz.getLocation(await FlutterTimezone.getLocalTimezone()));
-  } catch (_) {}
+      } catch (_) {}
   await _np.initialize(const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')));
   await _np
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
@@ -293,7 +291,7 @@ Future<void> _at(DateTime t, int id, String title, String body) => _np.zonedSche
       id,
       title,
       body,
-      tz.TZDateTime.from(t, tz.local),
+      tz.TZDateTime.from(t, tz.UTC),
       NotificationDetails(
         android: AndroidNotificationDetails(
           'gameday',
