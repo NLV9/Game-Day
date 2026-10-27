@@ -17,6 +17,13 @@ const _keys = {
 };
 String _norm(String s) => s.toLowerCase().replaceAll('-', ' ');
 
+/// Every network call gives up after 12 seconds, so a stuck request can never freeze the sync.
+Future<http.Response> _get(String url, {Map<String, String>? headers}) =>
+    http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 12));
+
+/// Short report of what each source returned; shown at the top of the Games tab.
+final List<String> syncLog = [];
+
 String classify(String name, {String? type, String? code}) {
   final n = name.toLowerCase();
   if (code == 'CL' || n.contains('champions league')) return 'Champions League';
@@ -54,11 +61,12 @@ Future<List<Game>> fetchFootballData(String token) async {
   const ids = {'Real Madrid': 86, 'Liverpool': 64, 'Dortmund': 4};
   final out = <Game>[];
   for (final e in ids.entries) {
-    final r = await http.get(
-      Uri.parse('https://api.football-data.org/v4/teams/${e.value}/matches?status=SCHEDULED,TIMED&limit=60'),
+    final r = await _get(
+      'https://api.football-data.org/v4/teams/${e.value}/matches?status=SCHEDULED,TIMED&limit=60',
       headers: {'X-Auth-Token': token},
     );
     if (r.statusCode != 200) throw 'football-data.org (${e.key}): HTTP ${r.statusCode}';
+    var n = 0;
     for (final m in (jsonDecode(r.body)['matches'] as List)) {
       final mine = m['homeTeam']['id'] == e.value;
       final opp = mine ? m['awayTeam'] : m['homeTeam'];
@@ -71,7 +79,9 @@ Future<List<Game>> fetchFootballData(String token) async {
         opponent: '${opp['shortName'] ?? opp['name']} (${mine ? 'home' : 'away'})',
         start: DateTime.parse(m['utcDate']).toLocal(),
       ));
+      n++;
     }
+    syncLog.add('football-data.org ${e.key}: $n games');
   }
   return out;
 }
@@ -91,18 +101,41 @@ Future<List<Game>> fetchSportsDb() async {
   final seen = <String>{};
   for (final e in queries.entries) {
     final team = e.key, key = _keys[team]!;
+    final cands = <Map>[];
     for (final q in e.value) {
-      final r = await http.get(Uri.parse('$_db/searchteams.php?t=${Uri.encodeComponent(q)}'));
-      if (r.statusCode != 200) continue;
-      for (final t in (jsonDecode(r.body)['teams'] as List?) ?? const []) {
-        final name = _norm('${t['strTeam']}');
-        final sport = _sport('${t['strSport']}');
-        if (sport == null || '${t['strCountry']}' != countries[team]) continue;
-        if (!name.contains(key) || skip.hasMatch(name)) continue;
-        if (team != 'Maccabi Tel Aviv' && sport != 'Football') continue;
-        if (!seen.add('${t['idTeam']}')) continue;
-        final er = await http.get(Uri.parse('$_db/eventsnext.php?id=${t['idTeam']}'));
-        if (er.statusCode != 200) continue;
+      try {
+        final r = await _get('$_db/searchteams.php?t=${Uri.encodeComponent(q)}');
+        if (r.statusCode != 200) {
+          syncLog.add('TheSportsDB search "$q": HTTP ${r.statusCode}');
+          continue;
+        }
+        for (final t in (jsonDecode(r.body)['teams'] as List?) ?? const []) {
+          final name = _norm('${t['strTeam']}');
+          final sport = _sport('${t['strSport']}');
+          if (sport == null || !name.contains(key) || skip.hasMatch(name)) continue;
+          if (team != 'Maccabi Tel Aviv' && sport != 'Football') continue;
+          cands.add(t as Map);
+        }
+      } catch (err) {
+        syncLog.add('TheSportsDB search "$q": $err');
+      }
+    }
+    final strict = cands.where((t) => '${t['strCountry']}' == countries[team]).toList();
+    final use = strict.isNotEmpty ? strict : cands;
+    if (use.isEmpty) {
+      syncLog.add('$team: team not found in TheSportsDB');
+      continue;
+    }
+    var n = 0;
+    for (final t in use) {
+      if (!seen.add('${t['idTeam']}')) continue;
+      final sport = _sport('${t['strSport']}')!;
+      try {
+        final er = await _get('$_db/eventsnext.php?id=${t['idTeam']}');
+        if (er.statusCode != 200) {
+          syncLog.add('$team games: HTTP ${er.statusCode}');
+          continue;
+        }
         for (final ev in (jsonDecode(er.body)['events'] as List?) ?? const []) {
           final raw = ev['strTimestamp'] ?? '${ev['dateEvent']}T${ev['strTime'] ?? '00:00:00'}';
           final start = parseUtc('$raw');
@@ -118,9 +151,13 @@ Future<List<Game>> fetchSportsDb() async {
             opponent: '${mine ? away : home} (${mine ? 'home' : 'away'})',
             start: start,
           ));
+          n++;
         }
+      } catch (err) {
+        syncLog.add('$team games: $err');
       }
     }
+    syncLog.add('$team: $n games from TheSportsDB');
   }
   return out;
 }
@@ -232,33 +269,42 @@ class AppState extends ChangeNotifier {
   Future<void> sync() async {
     if (loading) return;
     loading = true;
-    status = null;
+    status = 'Syncing...';
+    syncLog.clear();
     notifyListeners();
-    final errors = <String>[];
-    var found = <Game>[];
-    if (token.isNotEmpty) {
-      try {
-        found = await fetchFootballData(token);
-      } catch (e) {
-        errors.add('$e');
-      }
-    }
     try {
-      found = mergeGames(found, await fetchSportsDb());
+      final errors = <String>[];
+      var found = <Game>[];
+      if (token.isNotEmpty) {
+        try {
+          found = await fetchFootballData(token);
+        } catch (e) {
+          errors.add('$e');
+        }
+      }
+      try {
+        found = mergeGames(found, await fetchSportsDb());
+      } catch (e) {
+        errors.add('TheSportsDB: $e');
+      }
+      final cutoff = DateTime.now().subtract(const Duration(hours: 3));
+      found = found.where((g) => g.start.isAfter(cutoff)).toList();
+      if (found.isNotEmpty) {
+        games = found;
+        lastSync = DateTime.now();
+      }
+      status = [
+        found.isEmpty ? 'No games found.' : 'Synced: ${found.length} games.',
+        if (token.isEmpty) 'No football-data.org key set (see Settings).',
+        ...errors,
+        ...syncLog,
+      ].join('\n');
     } catch (e) {
-      errors.add('TheSportsDB: $e');
+      status = 'Sync failed: $e';
+    } finally {
+      loading = false;
+      save();
     }
-    final cutoff = DateTime.now().subtract(const Duration(hours: 3));
-    found = found.where((g) => g.start.isAfter(cutoff)).toList();
-    if (found.isNotEmpty) {
-      games = found;
-      lastSync = DateTime.now();
-    }
-    status = errors.isEmpty
-        ? (token.isEmpty ? 'Synced. Add a football-data.org key in Settings for full football schedules.' : 'Synced.')
-        : errors.join('\n');
-    loading = false;
-    save();
     try {
       await scheduleAlerts(this);
     } catch (e) {
@@ -280,7 +326,7 @@ final _np = FlutterLocalNotificationsPlugin();
 Future<void> initNotifications() async {
   try {
     tzdata.initializeTimeZones();
-      } catch (_) {}
+  } catch (_) {}
   await _np.initialize(const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')));
   await _np
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
