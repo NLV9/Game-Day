@@ -56,7 +56,7 @@ ThemeData buildTheme(bool dark) {
       titleTextStyle: const TextStyle(color: yellow, fontSize: 22, fontWeight: FontWeight.w700),
     ),
     navigationBarTheme: NavigationBarThemeData(indicatorColor: yellow),
-    cardTheme: CardTheme(color: dark ? const Color(0xFF0F2350) : Colors.white, margin: const EdgeInsets.symmetric(vertical: 5), clipBehavior: Clip.antiAlias),
+    cardTheme: CardThemeData(color: dark ? const Color(0xFF0F2350) : Colors.white, margin: const EdgeInsets.symmetric(vertical: 5), clipBehavior: Clip.antiAlias),
   );
 }
 
