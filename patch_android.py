@@ -33,3 +33,5 @@ else:
     g += "\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'\n}\n"
     open(grv, 'w', encoding='utf-8').write(g)
 print('patched')
+gp = os.path.join(root, 'android/gradle.properties')
+open(gp, 'a', encoding='utf-8').write('\nkotlin.jvm.target.validation.mode=warning\n')
