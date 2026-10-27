@@ -87,7 +87,7 @@ Future<List<Game>> fetchFootballData(String token) async {
 }
 
 /// TheSportsDB free key: next games of every sport the teams play (limited number per team).
-const _db = 'https://www.thesportsdb.com/api/v1/json/3';
+const _db = 'https://www.thesportsdb.com/api/v1/json/123';
 Future<List<Game>> fetchSportsDb() async {
   const queries = {
     'Maccabi Tel Aviv': ['Maccabi Tel Aviv', 'Maccabi Tel-Aviv'],
