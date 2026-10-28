@@ -36,3 +36,11 @@ String hm(DateTime d) => '${d.hour.toString().padLeft(2, '0')}:${d.minute.toStri
 String dayLabel(DateTime d) => '${_wd[d.weekday - 1]} ${d.day} ${_mo[d.month - 1]}';
 String monthLabel(DateTime d) => '${_mo[d.month - 1]} ${d.year}';
 DateTime dayOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+/// A team calendar link (.ics / webcal://) pasted by the user.
+class CalSource {
+  final String url, team, sport;
+  const CalSource({required this.url, required this.team, required this.sport});
+  Map<String, dynamic> toJson() => {'u': url, 't': team, 's': sport};
+  factory CalSource.fromJson(Map<String, dynamic> j) => CalSource(url: j['u'], team: j['t'], sport: j['s']);
+}
