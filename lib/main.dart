@@ -16,7 +16,7 @@ Future<void> main() async {
     await initNotifications();
   } catch (_) {}
   runApp(const GameDayApp());
-  app.sync();
+  app.sync(force: false);
 }
 
 // No red anywhere: every "error" colour is mapped to blue.
@@ -568,9 +568,9 @@ class _SettingsPageState extends State<SettingsPage> {
         builder: (context, _) => Scaffold(
           appBar: AppBar(title: const Text('Settings')),
           body: ListView(padding: const EdgeInsets.all(16), children: [
-            const Text('Calendar links', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('Extra calendar links (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text("Paste the link of a team calendar (an .ics link or a webcal:// link) from a site you trust, such as the club's own website. Choose the team and the sport it belongs to, then tap Sync now."),
+            const Text("Liverpool, Real Madrid, Dortmund and Maccabi Tel Aviv (football) are built in and load automatically. You can optionally add more team calendars here: paste an .ics or webcal:// link, choose the team and sport, then tap Sync now."),
             for (var i = 0; i < app.cals.length; i++)
               ListTile(
                 contentPadding: EdgeInsets.zero,
