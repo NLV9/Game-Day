@@ -9,14 +9,6 @@ import 'models.dart';
 
 // ---------- Fixture sources ----------
 
-const _keys = {
-  'Maccabi Tel Aviv': 'maccabi tel aviv',
-  'Real Madrid': 'real madrid',
-  'Liverpool': 'liverpool',
-  'Dortmund': 'dortmund',
-};
-String _norm(String s) => s.toLowerCase().replaceAll('-', ' ');
-
 /// Every network call gives up after 12 seconds, so a stuck request can never freeze the sync.
 Future<http.Response> _get(String url, {Map<String, String>? headers}) =>
     http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 12));
@@ -37,26 +29,7 @@ String classify(String name, {String? type, String? code}) {
   return 'League';
 }
 
-DateTime? parseUtc(String s) {
-  final t = (s.endsWith('Z') || s.contains('+')) ? s : '${s}Z';
-  return DateTime.tryParse(t)?.toLocal();
-}
-
-String? _sport(String s) {
-  switch (s.toLowerCase()) {
-    case 'soccer':
-      return 'Football';
-    case 'basketball':
-      return 'Basketball';
-    case 'handball':
-      return 'Handball';
-    case 'volleyball':
-      return 'Volleyball';
-  }
-  return null;
-}
-
-/// football-data.org (free key): Real Madrid, Liverpool, Dortmund. League + Champions League.
+/// football-data.org (optional free key): Real Madrid, Liverpool, Dortmund. League + Champions League.
 Future<List<Game>> fetchFootballData(String token) async {
   const ids = {'Real Madrid': 86, 'Liverpool': 64, 'Dortmund': 4};
   final out = <Game>[];
@@ -86,78 +59,150 @@ Future<List<Game>> fetchFootballData(String token) async {
   return out;
 }
 
-/// TheSportsDB free key: next games of every sport the teams play (limited number per team).
-const _db = 'https://www.thesportsdb.com/api/v1/json/123';
-Future<List<Game>> fetchSportsDb() async {
-  const queries = {
-    'Maccabi Tel Aviv': ['Maccabi Tel Aviv', 'Maccabi Tel-Aviv'],
-    'Real Madrid': ['Real Madrid'],
-    'Liverpool': ['Liverpool'],
-    'Dortmund': ['Borussia Dortmund'],
-  };
-  const countries = {'Maccabi Tel Aviv': 'Israel', 'Real Madrid': 'Spain', 'Liverpool': 'England', 'Dortmund': 'Germany'};
-  final skip = RegExp(r'women|ladies|u\d\d|youth|reserve');
-  final out = <Game>[];
-  final seen = <String>{};
-  for (final e in queries.entries) {
-    final team = e.key, key = _keys[team]!;
-    final cands = <Map>[];
-    for (final q in e.value) {
-      try {
-        final r = await _get('$_db/searchteams.php?t=${Uri.encodeComponent(q)}');
-        if (r.statusCode != 200) {
-          syncLog.add('TheSportsDB search "$q": HTTP ${r.statusCode}');
-          continue;
-        }
-        for (final t in (jsonDecode(r.body)['teams'] as List?) ?? const []) {
-          final name = _norm('${t['strTeam']}');
-          final sport = _sport('${t['strSport']}');
-          if (sport == null || !name.contains(key) || skip.hasMatch(name)) continue;
-          if (team != 'Maccabi Tel Aviv' && sport != 'Football') continue;
-          cands.add(t as Map);
-        }
-      } catch (err) {
-        syncLog.add('TheSportsDB search "$q": $err');
-      }
+// ---------- Calendar links (.ics) ----------
+
+const _teamKeys = {
+  'Maccabi Tel Aviv': ['maccabi tel aviv', 'maccabi ta', 'מכבי תל אביב', 'מכבי ת"א'],
+  'Real Madrid': ['real madrid', 'ריאל מדריד'],
+  'Liverpool': ['liverpool', 'ליברפול'],
+  'Dortmund': ['dortmund', 'bvb', 'דורטמונד'],
+};
+final _sep = RegExp(r'\s+(?:v|vs\.?|-|–|—|x)\s+', caseSensitive: false);
+
+String _unesc(String s) =>
+    s.replaceAll(r'\n', ' ').replaceAll(r'\N', ' ').replaceAll(r'\,', ',').replaceAll(r'\;', ';');
+
+String _clean(String s) => s.replaceFirst(RegExp(r'^[^\p{L}\p{N}]+', unicode: true), '').trim();
+
+DateTime? _icsStart(String v, String params) {
+  final m = RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z?)$').firstMatch(v.trim());
+  if (m == null) return null; // all-day events have no kick-off time, so they are skipped
+  final y = int.parse(m[1]!), mo = int.parse(m[2]!), d = int.parse(m[3]!);
+  final h = int.parse(m[4]!), mi = int.parse(m[5]!), sec = int.parse(m[6] ?? '0');
+  if (m[7] == 'Z') return DateTime.utc(y, mo, d, h, mi, sec).toLocal();
+  final tzm = RegExp(r'TZID=([^;:]+)', caseSensitive: false).firstMatch(params);
+  if (tzm != null) {
+    try {
+      final loc = tz.getLocation(tzm[1]!.replaceAll('"', ''));
+      final t = tz.TZDateTime(loc, y, mo, d, h, mi, sec);
+      return DateTime.fromMillisecondsSinceEpoch(t.millisecondsSinceEpoch);
+    } catch (_) {}
+  }
+  return DateTime(y, mo, d, h, mi, sec);
+}
+
+Game? _icsGame(Map<String, String> ev, CalSource src) {
+  if ((ev['STATUS'] ?? '').toUpperCase() == 'CANCELLED') return null;
+  final start = _icsStart(ev['DTSTART'] ?? '', ev['DTSTART_PARAMS'] ?? '');
+  if (start == null) return null;
+  final summary = _unesc(ev['SUMMARY'] ?? '').trim();
+  if (summary.isEmpty) return null;
+  var s = summary;
+  var hint = '';
+  final ci = s.indexOf(': ');
+  if (ci > 0 && !_sep.hasMatch(s.substring(0, ci))) {
+    hint = s.substring(0, ci).trim();
+    s = s.substring(ci + 2);
+  }
+  final keys = _teamKeys[src.team] ?? [src.team.toLowerCase()];
+  bool mine(String t) {
+    final n = t.toLowerCase().replaceAll('-', ' ');
+    return keys.any((k) => n.contains(k));
+  }
+
+  final parts = s.split(_sep);
+  String opponent;
+  if (parts.length >= 2) {
+    final a = _clean(parts[0]), b = _clean(parts[1]);
+    if (mine(a)) {
+      opponent = '$b (home)';
+    } else if (mine(b)) {
+      opponent = '$a (away)';
+    } else {
+      opponent = _clean(s);
     }
-    final strict = cands.where((t) => '${t['strCountry']}' == countries[team]).toList();
-    final use = strict.isNotEmpty ? strict : cands;
-    if (use.isEmpty) {
-      syncLog.add('$team: team not found in TheSportsDB');
+  } else {
+    opponent = _clean(s);
+  }
+  final cats = _unesc(ev['CATEGORIES'] ?? '');
+  final desc = _unesc(ev['DESCRIPTION'] ?? '');
+  final compName = hint.isNotEmpty ? hint : cats;
+  return Game(
+    team: src.team,
+    sport: src.sport,
+    comp: classify('$hint $cats ${desc.length > 120 ? desc.substring(0, 120) : desc}'),
+    compName: compName,
+    opponent: opponent,
+    start: start,
+  );
+}
+
+List<Game> parseIcs(String text, CalSource src) {
+  final lines = text
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .replaceAll(RegExp(r'\n[ \t]'), '')
+      .split('\n');
+  final out = <Game>[];
+  Map<String, String>? ev;
+  var alarm = false;
+  for (final raw in lines) {
+    final line = raw.trimRight();
+    if (line == 'BEGIN:VEVENT') {
+      ev = {};
+      alarm = false;
       continue;
     }
-    var n = 0;
-    for (final t in use) {
-      if (!seen.add('${t['idTeam']}')) continue;
-      final sport = _sport('${t['strSport']}')!;
-      try {
-        final er = await _get('$_db/eventsnext.php?id=${t['idTeam']}');
-        if (er.statusCode != 200) {
-          syncLog.add('$team games: HTTP ${er.statusCode}');
-          continue;
-        }
-        for (final ev in (jsonDecode(er.body)['events'] as List?) ?? const []) {
-          final raw = ev['strTimestamp'] ?? '${ev['dateEvent']}T${ev['strTime'] ?? '00:00:00'}';
-          final start = parseUtc('$raw');
-          if (start == null) continue;
-          final home = '${ev['strHomeTeam']}', away = '${ev['strAwayTeam']}';
-          final mine = _norm(home).contains(key);
-          final league = '${ev['strLeague'] ?? ''}';
-          out.add(Game(
-            team: team,
-            sport: sport,
-            comp: classify(league),
-            compName: league,
-            opponent: '${mine ? away : home} (${mine ? 'home' : 'away'})',
-            start: start,
-          ));
-          n++;
-        }
-      } catch (err) {
-        syncLog.add('$team games: $err');
+    if (line == 'END:VEVENT') {
+      if (ev != null) {
+        final g = _icsGame(ev, src);
+        if (g != null) out.add(g);
       }
+      ev = null;
+      continue;
     }
-    syncLog.add('$team: $n games from TheSportsDB');
+    if (ev == null) continue;
+    if (line == 'BEGIN:VALARM') {
+      alarm = true;
+      continue;
+    }
+    if (line == 'END:VALARM') {
+      alarm = false;
+      continue;
+    }
+    if (alarm) continue;
+    final i = line.indexOf(':');
+    if (i < 1) continue;
+    final name = line.substring(0, i);
+    final key = name.split(';').first.toUpperCase();
+    ev[key] = line.substring(i + 1);
+    if (key == 'DTSTART') ev['DTSTART_PARAMS'] = name;
+  }
+  return out;
+}
+
+Future<List<Game>> fetchCalendars(List<CalSource> sources) async {
+  final out = <Game>[];
+  for (final s in sources) {
+    final label = '${s.team} ${s.sport} calendar';
+    try {
+      final url = s.url.trim().replaceFirst(RegExp(r'^webcal://', caseSensitive: false), 'https://');
+      final r = await _get(url);
+      if (r.statusCode != 200) {
+        syncLog.add('$label: HTTP ${r.statusCode}');
+        continue;
+      }
+      final body = utf8.decode(r.bodyBytes, allowMalformed: true);
+      if (!body.contains('BEGIN:VCALENDAR')) {
+        syncLog.add('$label: not a calendar file (the link may need a login)');
+        continue;
+      }
+      final games = parseIcs(body, s);
+      syncLog.add('$label: ${games.length} games');
+      out.addAll(games);
+    } catch (e) {
+      syncLog.add('$label: $e');
+    }
   }
   return out;
 }
@@ -176,6 +221,7 @@ List<Game> mergeGames(List<Game> a, List<Game> b) {
 class AppState extends ChangeNotifier {
   late SharedPreferences _p;
   List<Game> games = [], manual = [];
+  List<CalSource> cals = [];
   String token = '', channelMap = '', tv = 'all';
   int evStart = 18, evEnd = 23;
   Set<String> fTeams = {...teams}, fSports = {...sports}, fComps = {...comps};
@@ -196,9 +242,20 @@ class AppState extends ChangeNotifier {
     fComps = (_p.getStringList('fc') ?? comps).toSet();
     games = _read('games');
     manual = _read('manual');
+    cals = _readCals();
     final ls = _p.getString('last');
     lastSync = ls == null ? null : DateTime.tryParse(ls);
     notifyListeners();
+  }
+
+  List<CalSource> _readCals() {
+    final s = _p.getString('cals');
+    if (s == null) return [];
+    try {
+      return (jsonDecode(s) as List).map((e) => CalSource.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   List<Game> _read(String k) {
@@ -222,6 +279,7 @@ class AppState extends ChangeNotifier {
     _p.setStringList('fc', fComps.toList());
     _p.setString('games', jsonEncode(games.map((g) => g.toJson()).toList()));
     _p.setString('manual', jsonEncode(manual.map((g) => g.toJson()).toList()));
+    _p.setString('cals', jsonEncode(cals.map((c) => c.toJson()).toList()));
     if (lastSync != null) _p.setString('last', lastSync!.toIso8601String());
     notifyListeners();
   }
@@ -275,17 +333,20 @@ class AppState extends ChangeNotifier {
     try {
       final errors = <String>[];
       var found = <Game>[];
+      try {
+        found = await fetchCalendars(cals);
+      } catch (e) {
+        errors.add('Calendars: $e');
+      }
       if (token.isNotEmpty) {
         try {
-          found = await fetchFootballData(token);
+          found = mergeGames(found, await fetchFootballData(token));
         } catch (e) {
           errors.add('$e');
         }
       }
-      try {
-        found = mergeGames(found, await fetchSportsDb());
-      } catch (e) {
-        errors.add('TheSportsDB: $e');
+      if (cals.isEmpty && token.isEmpty) {
+        errors.add('Nothing to sync yet. In Settings, add a calendar link, or use "Add a game".');
       }
       final cutoff = DateTime.now().subtract(const Duration(hours: 3));
       found = found.where((g) => g.start.isAfter(cutoff)).toList();
@@ -295,7 +356,6 @@ class AppState extends ChangeNotifier {
       }
       status = [
         found.isEmpty ? 'No games found.' : 'Synced: ${found.length} games.',
-        if (token.isEmpty) 'No football-data.org key set (see Settings).',
         ...errors,
         ...syncLog,
       ].join('\n');
