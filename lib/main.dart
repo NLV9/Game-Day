@@ -470,6 +470,39 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ]);
 
+  Future<void> addCal(BuildContext context) async {
+    var team = teams[1], sport = sports[0];
+    final url = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, set) => AlertDialog(
+          title: const Text('Add a calendar link'),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              drop('Team', team, teams, (v) => set(() => team = v)),
+              drop('Sport', sport, sports, (v) => set(() => sport = v)),
+              TextField(controller: url, decoration: const InputDecoration(labelText: 'Calendar link (.ics or webcal://)')),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                final u = url.text.trim();
+                if (u.isEmpty) return;
+                app.cals.add(CalSource(url: u, team: team, sport: sport));
+                app.save();
+                Navigator.pop(c);
+              },
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> addGame(BuildContext context) async {
     var team = teams[0], sport = sports[1], comp = comps[0];
     final opp = TextEditingController(), ch = TextEditingController();
@@ -535,9 +568,36 @@ class _SettingsPageState extends State<SettingsPage> {
         builder: (context, _) => Scaffold(
           appBar: AppBar(title: const Text('Settings')),
           body: ListView(padding: const EdgeInsets.all(16), children: [
-            const Text('Football schedules', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('Calendar links', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text('Create a free account at football-data.org and paste the API key here. It gives full league and Champions League schedules for Real Madrid, Liverpool and Dortmund.'),
+            const Text("Paste the link of a team calendar (an .ics link or a webcal:// link) from a site you trust, such as the club's own website. Choose the team and the sport it belongs to, then tap Sync now."),
+            for (var i = 0; i < app.cals.length; i++)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('${app.cals[i].team} · ${app.cals[i].sport}'),
+                subtitle: Text(app.cals[i].url, maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: 'Remove',
+                  onPressed: () {
+                    app.cals.removeAt(i);
+                    app.save();
+                  },
+                ),
+              ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(onPressed: () => addCal(context), icon: const Icon(Icons.add), label: const Text('Add a calendar link')),
+            ),
+            FilledButton.icon(
+              onPressed: app.loading ? null : app.sync,
+              icon: const Icon(Icons.sync),
+              label: const Text('Sync now'),
+            ),
+            const SizedBox(height: 22),
+            const Text('Football schedules (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            const Text('Optional: a free football-data.org key adds league and Champions League games for Real Madrid, Liverpool and Dortmund.'),
             TextField(
               controller: tokenC,
               decoration: const InputDecoration(labelText: 'football-data.org API key'),
