@@ -61,6 +61,16 @@ Future<List<Game>> fetchFootballData(String token) async {
 
 // ---------- Calendar links (.ics) ----------
 
+/// Built-in sources, always on. FotMob publishes a public fixtures calendar for every club
+/// (league, cups and European games). The numbers are FotMob's team ids.
+const builtInCals = [
+  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/8650.ics', team: 'Liverpool', sport: 'Football'),
+  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/8633.ics', team: 'Real Madrid', sport: 'Football'),
+  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/9789.ics', team: 'Dortmund', sport: 'Football'),
+  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/7855.ics', team: 'Maccabi Tel Aviv', sport: 'Football'),
+];
+
+
 const _teamKeys = {
   'Maccabi Tel Aviv': ['maccabi tel aviv', 'maccabi ta', 'מכבי תל אביב', 'מכבי ת"א'],
   'Real Madrid': ['real madrid', 'ריאל מדריד'],
@@ -71,6 +81,13 @@ final _sep = RegExp(r'\s+(?:v|vs\.?|-|–|—|x)\s+', caseSensitive: false);
 
 String _unesc(String s) =>
     s.replaceAll(r'\n', ' ').replaceAll(r'\N', ' ').replaceAll(r'\,', ',').replaceAll(r'\;', ';');
+
+String _stripParen(String t, List<String> found) {
+  final m = RegExp(r'^(.*?)\s*\(([^()]*)\)\s*$').firstMatch(t);
+  if (m == null) return t;
+  found.add(m[2]!.trim());
+  return m[1]!.trim();
+}
 
 String _clean(String s) => s.replaceFirst(RegExp(r'^[^\p{L}\p{N}]+', unicode: true), '').trim();
 
@@ -110,10 +127,12 @@ Game? _icsGame(Map<String, String> ev, CalSource src) {
     return keys.any((k) => n.contains(k));
   }
 
+  final extra = <String>[];
   final parts = s.split(_sep);
   String opponent;
   if (parts.length >= 2) {
-    final a = _clean(parts[0]), b = _clean(parts[1]);
+    final a = _clean(_stripParen(parts[0], extra)), b = _clean(_stripParen(parts[1], extra));
+    if (parts.length >= 3 && hint.isEmpty) hint = parts[2].trim();
     if (mine(a)) {
       opponent = '$b (home)';
     } else if (mine(b)) {
@@ -122,7 +141,15 @@ Game? _icsGame(Map<String, String> ev, CalSource src) {
       opponent = _clean(s);
     }
   } else {
-    opponent = _clean(s);
+    opponent = _clean(_stripParen(s, extra));
+  }
+  if (hint.isEmpty) {
+    for (final e in extra) {
+      if (e.length > 3) {
+        hint = e;
+        break;
+      }
+    }
   }
   final cats = _unesc(ev['CATEGORIES'] ?? '');
   final desc = _unesc(ev['DESCRIPTION'] ?? '');
@@ -213,6 +240,38 @@ List<Game> mergeGames(List<Game> a, List<Game> b) {
     final dup = out.any((x) => x.team == g.team && x.sport == g.sport && x.start.difference(g.start).inHours.abs() < 3);
     if (!dup) out.add(g);
   }
+  return out;
+}
+
+// ---------- EuroLeague (Maccabi Tel Aviv basketball) ----------
+
+/// Official EuroLeague schedule (no key needed). Times come from the UTC field, so they are exact.
+Future<List<Game>> fetchEuroLeague() async {
+  final now = DateTime.now();
+  final season = 'E${now.month >= 7 ? now.year : now.year - 1}';
+  final r = await http
+      .get(Uri.parse('https://api-live.euroleague.net/v2/competitions/E/seasons/$season/games'))
+      .timeout(const Duration(seconds: 25));
+  if (r.statusCode != 200) throw 'EuroLeague: HTTP ${r.statusCode}';
+  final out = <Game>[];
+  for (final g in (jsonDecode(utf8.decode(r.bodyBytes))['data'] as List)) {
+    if (g['played'] == true) continue;
+    final home = g['local']['club'], away = g['road']['club'];
+    final homeMine = home['code'] == 'TEL';
+    if (!homeMine && away['code'] != 'TEL') continue;
+    final start = DateTime.tryParse('${g['utcDate']}')?.toLocal();
+    if (start == null) continue;
+    final opp = homeMine ? away : home;
+    out.add(Game(
+      team: 'Maccabi Tel Aviv',
+      sport: 'Basketball',
+      comp: 'Europe',
+      compName: 'EuroLeague round ${g['round']}${g['confirmedHour'] == false ? ' (time TBC)' : ''}',
+      opponent: '${opp['abbreviatedName'] ?? opp['name']} (${homeMine ? 'home' : 'away'})',
+      start: start,
+    ));
+  }
+  syncLog.add('EuroLeague, Maccabi basketball: ${out.length} games');
   return out;
 }
 
@@ -324,8 +383,12 @@ class AppState extends ChangeNotifier {
     save();
   }
 
-  Future<void> sync() async {
+  Future<void> sync({bool force = true}) async {
     if (loading) return;
+    // At app start, do not hit the sources again if the last sync was under 3 hours ago.
+    if (!force && lastSync != null && games.isNotEmpty && DateTime.now().difference(lastSync!).inHours < 3) {
+      return;
+    }
     loading = true;
     status = 'Syncing...';
     syncLog.clear();
@@ -334,9 +397,14 @@ class AppState extends ChangeNotifier {
       final errors = <String>[];
       var found = <Game>[];
       try {
-        found = await fetchCalendars(cals);
+        found = await fetchCalendars([...builtInCals, ...cals]);
       } catch (e) {
         errors.add('Calendars: $e');
+      }
+      try {
+        found = mergeGames(found, await fetchEuroLeague());
+      } catch (e) {
+        errors.add('$e');
       }
       if (token.isNotEmpty) {
         try {
@@ -344,9 +412,6 @@ class AppState extends ChangeNotifier {
         } catch (e) {
           errors.add('$e');
         }
-      }
-      if (cals.isEmpty && token.isEmpty) {
-        errors.add('Nothing to sync yet. In Settings, add a calendar link, or use "Add a game".');
       }
       final cutoff = DateTime.now().subtract(const Duration(hours: 3));
       found = found.where((g) => g.start.isAfter(cutoff)).toList();
