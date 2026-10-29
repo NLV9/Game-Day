@@ -18,32 +18,27 @@ m = m.replace('</application>', recv + '</application>', 1)
 m = m.replace('android:label="game_day"', 'android:label="Game Day"')
 open(mp, 'w', encoding='utf-8').write(m)
 
-# Gradle: core library desugaring
+# Gradle: core library desugaring + no code shrinking (shrinking breaks the notification plugin)
 base = os.path.join(root, 'android/app')
 kts = os.path.join(base, 'build.gradle.kts')
 grv = os.path.join(base, 'build.gradle')
 if os.path.exists(kts):
     g = open(kts, encoding='utf-8').read()
     g = re.sub(r'compileOptions\s*\{', 'compileOptions {\n        isCoreLibraryDesugaringEnabled = true', g, count=1)
+    g = re.sub(r'(buildTypes\s*\{\s*(?:getByName\("release"\)|release)\s*\{)',
+               r'\1\n            isMinifyEnabled = false\n            isShrinkResources = false', g, count=1)
     g += '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")\n}\n'
     open(kts, 'w', encoding='utf-8').write(g)
 else:
     g = open(grv, encoding='utf-8').read()
     g = re.sub(r'compileOptions\s*\{', 'compileOptions {\n        coreLibraryDesugaringEnabled true', g, count=1)
+    g = re.sub(r'(buildTypes\s*\{\s*release\s*\{)',
+               r'\1\n            minifyEnabled false\n            shrinkResources false', g, count=1)
     g += "\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'\n}\n"
     open(grv, 'w', encoding='utf-8').write(g)
-print('patched')
+
+# Kotlin/Java target mismatch only warns
 gp = os.path.join(root, 'android/gradle.properties')
-open(gp, 'a', encoding='utf-8').write('\nkotlin.jvm.target.validation.mode=warning\n')
-# Turn off code shrinking so the notification add-on works in release builds
-for name in ('build.gradle.kts', 'build.gradle'):
-    path = os.path.join(root, 'android/app', name)
-    if not os.path.exists(path):
-        continue
-    g = open(path, encoding='utf-8').read()
-    if name.endswith('.kts'):
-        add = '\n            isMinifyEnabled = false\n            isShrinkResources = false'
-    else:
-        add = '\n            minifyEnabled false\n            shrinkResources false'
-    g = re.sub(r'(buildTypes\s*\{\s*release\s*\{)', r'\1' + add, g, count=1)
-    open(path, 'w', encoding='utf-8').write(g)
+with open(gp, 'a', encoding='utf-8') as f:
+    f.write('\nkotlin.jvm.target.validation.mode=warning\n')
+print('patched')
