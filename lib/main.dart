@@ -11,12 +11,10 @@ const soft = Color(0xFFDCE9FF);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await app.load();
-  try {
-    await initNotifications();
-  } catch (_) {}
+  await app.load(); // saved games are on screen immediately
   runApp(const GameDayApp());
-  app.sync(force: false);
+  startNotifications(); // in the background, never blocks the screen
+  app.sync(force: false); // only goes online if nothing is saved or the data is over 12 hours old
 }
 
 // No red anywhere: every "error" colour is mapped to blue.
@@ -80,6 +78,7 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   int tab = 0;
+  bool freeSeen = false;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
         listenable: app,
@@ -98,10 +97,13 @@ class _HomeState extends State<Home> {
                 ? const PreferredSize(preferredSize: Size.fromHeight(4), child: LinearProgressIndicator())
                 : null,
           ),
-          body: tab == 0 ? const GamesTab() : const FreeTab(),
+          body: IndexedStack(index: tab, children: [GamesTab(), if (freeSeen) FreeTab() else const SizedBox()]),
           bottomNavigationBar: NavigationBar(
             selectedIndex: tab,
-            onDestinationSelected: (i) => setState(() => tab = i),
+            onDestinationSelected: (i) => setState(() {
+              tab = i;
+              if (i == 1) freeSeen = true;
+            }),
             destinations: const [
               NavigationDestination(icon: Icon(Icons.sports_soccer), label: 'Games'),
               NavigationDestination(icon: Icon(Icons.nightlight_round), label: 'Free nights'),
@@ -257,8 +259,25 @@ class GamesTab extends StatelessWidget {
     return RefreshIndicator(
       onRefresh: app.sync,
       child: ListView(padding: const EdgeInsets.all(12), children: [
-        if (app.status != null)
-          Padding(padding: const EdgeInsets.only(bottom: 6), child: Text(app.status!, style: Theme.of(context).textTheme.bodySmall)),
+        Card(
+          child: ExpansionTile(
+            shape: const Border(),
+            collapsedShape: const Border(),
+            title: Text(app.status ?? 'Showing saved games. Tap refresh to update.', style: const TextStyle(fontSize: 14)),
+            subtitle: Text(
+              'Game Day $appVersion · ${app.lastSync == null ? 'never updated' : 'last update ${dayLabel(app.lastSync!)} ${hm(app.lastSync!)}'}',
+              style: const TextStyle(fontSize: 12),
+            ),
+            childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            expandedAlignment: Alignment.centerLeft,
+            children: [
+              Text([
+                ...syncLog,
+                if (app.alertsNote.isNotEmpty) app.alertsNote.length > 200 ? app.alertsNote.substring(0, 200) : app.alertsNote,
+              ].join('\n')),
+            ],
+          ),
+        ),
         if (preview != null) preview,
         const FilterPanel(),
         OutlinedButton.icon(
@@ -442,7 +461,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
-    scheduleAlerts(app).catchError((_) {});
+    app.rescheduleAlerts();
     super.dispose();
   }
 
