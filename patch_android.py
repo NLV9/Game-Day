@@ -35,3 +35,15 @@ else:
 print('patched')
 gp = os.path.join(root, 'android/gradle.properties')
 open(gp, 'a', encoding='utf-8').write('\nkotlin.jvm.target.validation.mode=warning\n')
+# Turn off code shrinking so the notification add-on works in release builds
+for name in ('build.gradle.kts', 'build.gradle'):
+    path = os.path.join(root, 'android/app', name)
+    if not os.path.exists(path):
+        continue
+    g = open(path, encoding='utf-8').read()
+    if name.endswith('.kts'):
+        add = '\n            isMinifyEnabled = false\n            isShrinkResources = false'
+    else:
+        add = '\n            minifyEnabled false\n            shrinkResources false'
+    g = re.sub(r'(buildTypes\s*\{\s*release\s*\{)', r'\1' + add, g, count=1)
+    open(path, 'w', encoding='utf-8').write(g)
