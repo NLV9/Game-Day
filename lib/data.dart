@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
@@ -7,14 +9,16 @@ import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 import 'models.dart';
 
-// ---------- Fixture sources ----------
+/// Every source gets at most this long. A slow source never blocks the others or the app.
+const sourceDeadline = Duration(seconds: 5);
 
-/// Every network call gives up after 12 seconds, so a stuck request can never freeze the sync.
-Future<http.Response> _get(String url, {Map<String, String>? headers}) =>
-    http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 12));
+Future<http.Response> _get(http.Client c, String url, {Map<String, String>? headers}) =>
+    c.get(Uri.parse(url), headers: headers);
 
-/// Short report of what each source returned; shown at the top of the Games tab.
+/// Short report of what each source returned (shown only under "Details").
 final List<String> syncLog = [];
+const appVersion = 'v6';
+void _log(String line) => syncLog.add(line);
 
 String classify(String name, {String? type, String? code}) {
   final n = name.toLowerCase();
@@ -29,35 +33,32 @@ String classify(String name, {String? type, String? code}) {
   return 'League';
 }
 
-/// football-data.org (optional free key): Real Madrid, Liverpool, Dortmund. League + Champions League.
-Future<List<Game>> fetchFootballData(String token) async {
-  const ids = {'Real Madrid': 86, 'Liverpool': 64, 'Dortmund': 4};
+/// football-data.org (optional free key): one team per call, run in parallel.
+Future<List<Game>> fetchFootballDataTeam(http.Client c, String token, String team, int id) async {
+  final r = await _get(
+    c,
+    'https://api.football-data.org/v4/teams/$id/matches?status=SCHEDULED,TIMED&limit=60',
+    headers: {'X-Auth-Token': token},
+  );
+  if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
   final out = <Game>[];
-  for (final e in ids.entries) {
-    final r = await _get(
-      'https://api.football-data.org/v4/teams/${e.value}/matches?status=SCHEDULED,TIMED&limit=60',
-      headers: {'X-Auth-Token': token},
-    );
-    if (r.statusCode != 200) throw 'football-data.org (${e.key}): HTTP ${r.statusCode}';
-    var n = 0;
-    for (final m in (jsonDecode(r.body)['matches'] as List)) {
-      final mine = m['homeTeam']['id'] == e.value;
-      final opp = mine ? m['awayTeam'] : m['homeTeam'];
-      final c = m['competition'];
-      out.add(Game(
-        team: e.key,
-        sport: 'Football',
-        comp: classify('${c['name']}', type: c['type'], code: c['code']),
-        compName: '${c['name']}',
-        opponent: '${opp['shortName'] ?? opp['name']} (${mine ? 'home' : 'away'})',
-        start: DateTime.parse(m['utcDate']).toLocal(),
-      ));
-      n++;
-    }
-    syncLog.add('football-data.org ${e.key}: $n games');
+  for (final m in (jsonDecode(r.body)['matches'] as List)) {
+    final mine = m['homeTeam']['id'] == id;
+    final opp = mine ? m['awayTeam'] : m['homeTeam'];
+    final comp = m['competition'];
+    out.add(Game(
+      team: team,
+      sport: 'Football',
+      comp: classify('${comp['name']}', type: comp['type'], code: comp['code']),
+      compName: '${comp['name']}',
+      opponent: '${opp['shortName'] ?? opp['name']} (${mine ? 'home' : 'away'})',
+      start: DateTime.parse(m['utcDate']).toLocal(),
+    ));
   }
   return out;
 }
+
+const footballDataIds = {'Real Madrid': 86, 'Liverpool': 64, 'Dortmund': 4};
 
 // ---------- Calendar links (.ics) ----------
 
@@ -208,30 +209,29 @@ List<Game> parseIcs(String text, CalSource src) {
   return out;
 }
 
-Future<List<Game>> fetchCalendars(List<CalSource> sources) async {
-  final out = <Game>[];
-  for (final s in sources) {
-    final label = '${s.team} ${s.sport} calendar';
+/// Runs in a background isolate so reading a big file never freezes the screen.
+String _parseIcsJob(Map<String, String> a) {
+  final body = a['text']!;
+  if (body.contains('TZID=')) {
     try {
-      final url = s.url.trim().replaceFirst(RegExp(r'^webcal://', caseSensitive: false), 'https://');
-      final r = await _get(url);
-      if (r.statusCode != 200) {
-        syncLog.add('$label: HTTP ${r.statusCode}');
-        continue;
-      }
-      final body = utf8.decode(r.bodyBytes, allowMalformed: true);
-      if (!body.contains('BEGIN:VCALENDAR')) {
-        syncLog.add('$label: not a calendar file (the link may need a login)');
-        continue;
-      }
-      final games = parseIcs(body, s);
-      syncLog.add('$label: ${games.length} games');
-      out.addAll(games);
-    } catch (e) {
-      syncLog.add('$label: $e');
-    }
+      tzdata.initializeTimeZones();
+    } catch (_) {}
   }
-  return out;
+  final src = CalSource(url: '', team: a['team']!, sport: a['sport']!);
+  return jsonEncode(parseIcs(body, src).map((g) => g.toJson()).toList());
+}
+
+List<Game> _fromJsonText(String t) =>
+    (jsonDecode(t) as List).map((e) => Game.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+
+Future<List<Game>> fetchCalendar(http.Client c, CalSource s) async {
+  final url = s.url.trim().replaceFirst(RegExp(r'^webcal://', caseSensitive: false), 'https://');
+  final r = await _get(c, url);
+  if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
+  final body = utf8.decode(r.bodyBytes, allowMalformed: true);
+  if (!body.contains('BEGIN:VCALENDAR')) throw 'not a calendar file (the link may need a login)';
+  final text = await compute(_parseIcsJob, <String, String>{'text': body, 'team': s.team, 'sport': s.sport});
+  return _fromJsonText(text);
 }
 
 List<Game> mergeGames(List<Game> a, List<Game> b) {
@@ -245,16 +245,10 @@ List<Game> mergeGames(List<Game> a, List<Game> b) {
 
 // ---------- EuroLeague (Maccabi Tel Aviv basketball) ----------
 
-/// Official EuroLeague schedule (no key needed). Times come from the UTC field, so they are exact.
-Future<List<Game>> fetchEuroLeague() async {
-  final now = DateTime.now();
-  final season = 'E${now.month >= 7 ? now.year : now.year - 1}';
-  final r = await http
-      .get(Uri.parse('https://api-live.euroleague.net/v2/competitions/E/seasons/$season/games'))
-      .timeout(const Duration(seconds: 25));
-  if (r.statusCode != 200) throw 'EuroLeague: HTTP ${r.statusCode}';
-  final out = <Game>[];
-  for (final g in (jsonDecode(utf8.decode(r.bodyBytes))['data'] as List)) {
+/// Runs in a background isolate: the EuroLeague file is large (about 700 KB).
+String _parseEuroJob(String body) {
+  final out = <Map<String, dynamic>>[];
+  for (final g in (jsonDecode(body)['data'] as List)) {
     if (g['played'] == true) continue;
     final home = g['local']['club'], away = g['road']['club'];
     final homeMine = home['code'] == 'TEL';
@@ -269,10 +263,19 @@ Future<List<Game>> fetchEuroLeague() async {
       compName: 'EuroLeague round ${g['round']}${g['confirmedHour'] == false ? ' (time TBC)' : ''}',
       opponent: '${opp['abbreviatedName'] ?? opp['name']} (${homeMine ? 'home' : 'away'})',
       start: start,
-    ));
+    ).toJson());
   }
-  syncLog.add('EuroLeague, Maccabi basketball: ${out.length} games');
-  return out;
+  return jsonEncode(out);
+}
+
+/// Official EuroLeague schedule (no key needed). Times come from the UTC field, so they are exact.
+Future<List<Game>> fetchEuroLeague(http.Client c) async {
+  final now = DateTime.now();
+  final season = 'E${now.month >= 7 ? now.year : now.year - 1}';
+  final r = await _get(c, 'https://api-live.euroleague.net/v2/competitions/E/seasons/$season/games');
+  if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
+  final text = await compute(_parseEuroJob, utf8.decode(r.bodyBytes));
+  return _fromJsonText(text);
 }
 
 // ---------- App state ----------
@@ -280,6 +283,9 @@ Future<List<Game>> fetchEuroLeague() async {
 class AppState extends ChangeNotifier {
   late SharedPreferences _p;
   List<Game> games = [], manual = [];
+  Map<String, List<Game>> bySrc = {}; // last good result of each source
+  List<Game>? _allCache;
+  String alertsNote = '';
   List<CalSource> cals = [];
   String token = '', channelMap = '', tv = 'all';
   int evStart = 18, evEnd = 23;
@@ -301,6 +307,8 @@ class AppState extends ChangeNotifier {
     fComps = (_p.getStringList('fc') ?? comps).toSet();
     games = _read('games');
     manual = _read('manual');
+    bySrc = _readBySrc();
+    _allCache = null;
     cals = _readCals();
     final ls = _p.getString('last');
     lastSync = ls == null ? null : DateTime.tryParse(ls);
@@ -314,6 +322,18 @@ class AppState extends ChangeNotifier {
       return (jsonDecode(s) as List).map((e) => CalSource.fromJson(e as Map<String, dynamic>)).toList();
     } catch (_) {
       return [];
+    }
+  }
+
+  Map<String, List<Game>> _readBySrc() {
+    final s = _p.getString('bysrc');
+    if (s == null) return {};
+    try {
+      final m = jsonDecode(s) as Map<String, dynamic>;
+      return m.map((k, v) => MapEntry(
+          k, (v as List).map((e) => Game.fromJson(Map<String, dynamic>.from(e as Map))).toList()));
+    } catch (_) {
+      return {};
     }
   }
 
@@ -339,11 +359,13 @@ class AppState extends ChangeNotifier {
     _p.setString('games', jsonEncode(games.map((g) => g.toJson()).toList()));
     _p.setString('manual', jsonEncode(manual.map((g) => g.toJson()).toList()));
     _p.setString('cals', jsonEncode(cals.map((c) => c.toJson()).toList()));
+    _p.setString('bysrc', jsonEncode(bySrc.map((k, v) => MapEntry(k, v.map((g) => g.toJson()).toList()))));
+    _allCache = null;
     if (lastSync != null) _p.setString('last', lastSync!.toIso8601String());
     notifyListeners();
   }
 
-  List<Game> get all => [...games, ...manual]..sort((a, b) => a.start.compareTo(b.start));
+  List<Game> get all => _allCache ??= ([...games, ...manual]..sort((a, b) => a.start.compareTo(b.start)));
 
   String? channelOf(Game g) {
     if (g.channel != null && g.channel!.isNotEmpty) return g.channel;
@@ -383,59 +405,96 @@ class AppState extends ChangeNotifier {
     save();
   }
 
+  /// Combines the last good result of every source into the list the screens show.
+  void _rebuild() {
+    final cutoff = DateTime.now().subtract(const Duration(hours: 3));
+    var found = <Game>[];
+    for (final list in bySrc.values) {
+      found = mergeGames(found, list.where((g) => g.start.isAfter(cutoff)).toList());
+    }
+    games = found;
+    _allCache = null;
+  }
+
+  /// Refresh from the internet. The screen keeps showing the saved games meanwhile, and each
+  /// source updates the list the moment it answers. No source may take longer than 5 seconds.
+  /// Without [force] (app start) it only runs when nothing is saved or the data is over 12 hours old.
   Future<void> sync({bool force = true}) async {
     if (loading) return;
-    // At app start, do not hit the sources again if the last sync was under 3 hours ago.
-    if (!force && lastSync != null && games.isNotEmpty && DateTime.now().difference(lastSync!).inHours < 3) {
+    if (!force && games.isNotEmpty && lastSync != null && DateTime.now().difference(lastSync!).inHours < 12) {
       return;
     }
     loading = true;
-    status = 'Syncing...';
     syncLog.clear();
+    status = games.isEmpty ? 'Loading games...' : 'Updating...';
     notifyListeners();
-    try {
-      final errors = <String>[];
-      var found = <Game>[];
-      try {
-        found = await fetchCalendars([...builtInCals, ...cals]);
-      } catch (e) {
-        errors.add('Calendars: $e');
-      }
-      try {
-        found = mergeGames(found, await fetchEuroLeague());
-      } catch (e) {
-        errors.add('$e');
-      }
-      if (token.isNotEmpty) {
+    final client = http.Client();
+    var ok = 0, bad = 0;
+    final jobs = <Future<void>>[];
+
+    void add(String key, String label, Future<List<Game>> Function() run) {
+      jobs.add(() async {
         try {
-          found = mergeGames(found, await fetchFootballData(token));
+          final r = await run().timeout(sourceDeadline);
+          bySrc[key] = r;
+          ok++;
+          _log('$label: ${r.length} games');
+          _rebuild();
+          notifyListeners();
+        } on TimeoutException {
+          bad++;
+          _log('$label: too slow, kept saved games');
         } catch (e) {
-          errors.add('$e');
+          bad++;
+          _log('$label: $e');
+        }
+      }());
+    }
+
+    try {
+      for (final s in [...builtInCals, ...cals]) {
+        add('cal:${s.url}', '${s.team} ${s.sport} calendar', () => fetchCalendar(client, s));
+      }
+      add('euroleague', 'EuroLeague, Maccabi basketball', () => fetchEuroLeague(client));
+      if (token.isNotEmpty) {
+        for (final e in footballDataIds.entries) {
+          add('fd:${e.key}', 'football-data.org ${e.key}', () => fetchFootballDataTeam(client, token, e.key, e.value));
         }
       }
-      final cutoff = DateTime.now().subtract(const Duration(hours: 3));
-      found = found.where((g) => g.start.isAfter(cutoff)).toList();
-      if (found.isNotEmpty) {
-        games = found;
-        lastSync = DateTime.now();
-      }
-      status = [
-        found.isEmpty ? 'No games found.' : 'Synced: ${found.length} games.',
-        ...errors,
-        ...syncLog,
-      ].join('\n');
+      await Future.wait(jobs);
+      if (ok > 0) lastSync = DateTime.now();
+      status = ok == 0
+          ? 'Could not reach the sources. Showing saved games.'
+          : bad == 0
+              ? 'Updated just now: ${games.length} games.'
+              : 'Updated: ${games.length} games ($bad source(s) did not answer, saved data kept).';
     } catch (e) {
-      status = 'Sync failed: $e';
+      status = 'Update failed, showing saved games.';
+      _log('$e');
     } finally {
+      client.close();
       loading = false;
       save();
     }
-    try {
-      await scheduleAlerts(this);
-    } catch (e) {
-      status = '${status ?? ''}\nAlerts: $e';
+    _alertsInBackground();
+  }
+
+  bool _scheduling = false;
+
+  void rescheduleAlerts() => _alertsInBackground();
+
+  /// Notifications are set up after the screen is already updated, and never block it.
+  void _alertsInBackground() {
+    if (_scheduling) return;
+    _scheduling = true;
+    scheduleAlerts(this).then((_) {
+      alertsNote = '';
+    }).catchError((Object e) {
+      alertsNote = 'Alerts could not be set: $e';
+    }).whenComplete(() {
+      _scheduling = false;
       notifyListeners();
-    }
+    });
   }
 }
 
@@ -448,14 +507,20 @@ String gameLine(AppState s, Game g) =>
 
 final _np = FlutterLocalNotificationsPlugin();
 
+Future<void>? notifInit;
+
+/// Started without waiting, so the app opens instantly.
+void startNotifications() {
+  notifInit = initNotifications().catchError((Object _) {});
+}
+
 Future<void> initNotifications() async {
   try {
     tzdata.initializeTimeZones();
   } catch (_) {}
   await _np.initialize(const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')));
-  await _np
-      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-      ?.requestNotificationsPermission();
+  // Not awaited: the permission pop-up must never block the app.
+  _np.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
 }
 
 Future<void> _at(DateTime t, int id, String title, String body) => _np.zonedSchedule(
@@ -479,6 +544,7 @@ Future<void> _at(DateTime t, int id, String title, String body) => _np.zonedSche
 
 /// Game day alert at 11:00 and Sunday free-evening summary at 10:00, for the next 60 days.
 Future<void> scheduleAlerts(AppState s) async {
+  await notifInit;
   await _np.cancelAll();
   final now = DateTime.now();
   final today = dayOnly(now);
