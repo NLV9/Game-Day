@@ -417,7 +417,7 @@ class _FreeTabState extends State<FreeTab> {
     final cs = Theme.of(context).colorScheme;
     final today = dayOnly(DateTime.now());
     final end = DateTime(today.year, today.month, today.day + 90);
-    final ws = DateTime(today.year, today.month, today.day - today.weekday % 7 + w * 7);
+    final ws = DateTime(today.year, today.month, today.day + w * 7); // starts today, then 7 days
     final we = DateTime(ws.year, ws.month, ws.day + 6);
 
     final weekRows = <Widget>[];
@@ -433,7 +433,7 @@ class _FreeTabState extends State<FreeTab> {
           borderRadius: BorderRadius.circular(10),
         ),
         child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text(dayLabel(d), style: TextStyle(fontWeight: FontWeight.w700, color: free ? navy : cs.onSurface)),
+          Text(d == today ? '${dayLabel(d)} (today)' : dayLabel(d), style: TextStyle(fontWeight: FontWeight.w700, color: free ? navy : cs.onSurface)),
           Flexible(
             child: Text(
               free ? (d.isBefore(today) ? 'Past' : 'Free evening') : gs.map((g) => '${g.team} ${hm(g.start)}').join(', '),
@@ -463,11 +463,11 @@ class _FreeTabState extends State<FreeTab> {
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Weekly summary (Sunday to Saturday)', style: TextStyle(fontWeight: FontWeight.w700)),
+            Text(w == 0 ? 'Next 7 days' : '7 days from ${dayLabel(ws)}', style: TextStyle(fontWeight: FontWeight.w700)),
             Text('${dayLabel(ws)} to ${dayLabel(we)} · all teams, filters not applied'),
             Row(children: [
-              TextButton(onPressed: () => setState(() => w--), child: const Text('Previous week')),
-              TextButton(onPressed: () => setState(() => w++), child: const Text('Next week')),
+              TextButton(onPressed: w > 0 ? () => setState(() => w--) : null, child: const Text('Previous 7 days')),
+              TextButton(onPressed: () => setState(() => w++), child: const Text('Next 7 days')),
             ]),
           ]),
         ),
