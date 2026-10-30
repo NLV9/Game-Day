@@ -38,7 +38,9 @@ class _TeamsPageState extends State<TeamsPage> {
       );
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(listenable: app, builder: (context, _) => _page(context));
+
+  Widget _page(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final leagues = leaguesOf(sport);
     final lg = leagues.contains(league) ? league : (leagues.isEmpty ? null : leagues.first);
@@ -82,39 +84,36 @@ class _TeamsPageState extends State<TeamsPage> {
       }
     }
 
-    return ListenableBuilder(
-      listenable: app,
-      builder: (context, _) => Scaffold(
-        appBar: AppBar(title: const Text('My Teams')),
-        body: ListView(padding: const EdgeInsets.all(16), children: [
-          const Text('Following', style: TextStyle(fontWeight: FontWeight.w700)),
-          Wrap(spacing: 6, runSpacing: 4, children: [
-            for (final c in app.followedClubs)
-              InputChip(
-                label: Text('${c.name} · ${c.sport}'),
-                backgroundColor: cs.primaryContainer,
-                onDeleted: () => toggle(c),
-              ),
-          ]),
-          if (app.followedClubs.isEmpty) const Text('No team followed yet.'),
-          const SizedBox(height: 14),
-          Wrap(spacing: 6, children: [
-            pick(context, 'By league', !bySearch, () => setState(() => bySearch = false)),
-            pick(context, 'Find a team', bySearch, () => setState(() => bySearch = true)),
-          ]),
-          const SizedBox(height: 10),
-          const Text('Sport', style: TextStyle(fontWeight: FontWeight.w700)),
-          Wrap(spacing: 6, runSpacing: 4, children: [
-            for (final s in sportOrder)
-              pick(context, s, s == sport, () => setState(() {
-                    sport = s;
-                    league = null;
-                  })),
-          ]),
-          const SizedBox(height: 12),
-          ...body,
+    return Scaffold(
+      appBar: AppBar(title: const Text('My Teams')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        const Text('Following', style: TextStyle(fontWeight: FontWeight.w700)),
+        Wrap(spacing: 6, runSpacing: 4, children: [
+          for (final c in app.followedClubs)
+            InputChip(
+              label: Text('${c.name} · ${c.sport}'),
+              backgroundColor: cs.primaryContainer,
+              onDeleted: () => toggle(c),
+            ),
         ]),
-      ),
+        if (app.followedClubs.isEmpty) const Text('No team followed yet.'),
+        const SizedBox(height: 14),
+        Wrap(spacing: 6, children: [
+          pick(context, 'By league', !bySearch, () => setState(() => bySearch = false)),
+          pick(context, 'Find a team', bySearch, () => setState(() => bySearch = true)),
+        ]),
+        const SizedBox(height: 10),
+        const Text('Sport', style: TextStyle(fontWeight: FontWeight.w700)),
+        Wrap(spacing: 6, runSpacing: 4, children: [
+          for (final s in sportOrder)
+            pick(context, s, s == sport, () => setState(() {
+                  sport = s;
+                  league = null;
+                })),
+        ]),
+        const SizedBox(height: 12),
+        ...body,
+      ]),
     );
   }
 }

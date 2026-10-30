@@ -226,7 +226,9 @@ class FilterPanel extends StatelessWidget {
       );
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => ListenableBuilder(listenable: app, builder: (context, _) => panel(context));
+
+  Widget panel(BuildContext context) => Card(
         child: ExpansionTile(
           title: const Text('Filters', style: TextStyle(fontWeight: FontWeight.w600)),
           childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),

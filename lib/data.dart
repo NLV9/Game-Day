@@ -18,7 +18,7 @@ Future<http.Response> _get(http.Client c, String url, {Map<String, String>? head
 
 /// Short report of what each source returned (shown only under "Details").
 final List<String> syncLog = [];
-const appVersion = 'v8';
+const appVersion = 'v9';
 void _log(String line) => syncLog.add(line);
 
 String classify(String name, {String? type, String? code}) {
