@@ -18,7 +18,7 @@ Future<http.Response> _get(http.Client c, String url, {Map<String, String>? head
 
 /// Short report of what each source returned (shown only under "Details").
 final List<String> syncLog = [];
-const appVersion = 'v9';
+const appVersion = 'v10';
 void _log(String line) => syncLog.add(line);
 
 String classify(String name, {String? type, String? code}) {
@@ -329,24 +329,36 @@ String _parseIlJob(Map<String, String> a) {
     if (row.isEmpty) continue;
     final tm = timeRe.firstMatch(row[0]);
     if (tm == null) continue; // kick-off time not set yet
-    final rest = row
+    final cleaned = row
         .skip(1)
         .where((t) => !timeRe.hasMatch(t) && !lead.hasMatch(t) && !junk.contains(t.toLowerCase()) && !scoreRe.hasMatch(t))
         .toList();
+    final rest = <String>[]; // the page repeats team names (logo text, mobile layout): keep one of each neighbour
+    for (final t in cleaned) {
+      if (rest.isEmpty || rest.last.toLowerCase() != t.toLowerCase()) rest.add(t);
+    }
     for (var k = 0; k < rest.length; k++) {
       final mine = names[rest[k].toLowerCase()];
       if (mine == null) continue;
-      String opp;
-      bool home;
-      if (k + 1 < rest.length && rest[k + 1].length >= 4) {
-        opp = rest[k + 1];
-        home = true;
-      } else if (k >= 1) {
-        opp = rest[k - 1];
-        home = false;
-      } else {
-        continue;
+      final me = rest[k].toLowerCase();
+      String? opp;
+      var home = true;
+      for (var j = k + 1; j < rest.length; j++) {
+        if (rest[j].toLowerCase() != me && rest[j].length >= 4) {
+          opp = rest[j];
+          break;
+        }
       }
+      if (opp == null) {
+        home = false;
+        for (var j = k - 1; j >= 0; j--) {
+          if (rest[j].toLowerCase() != me && rest[j].length >= 4) {
+            opp = rest[j];
+            break;
+          }
+        }
+      }
+      if (opp == null) continue;
       final tvIdx = home ? k - 1 : k - 2;
       final tv = tvIdx >= 0 && rest[tvIdx].length <= 24 ? rest[tvIdx] : null;
       final t = tz.TZDateTime(loc, int.parse(dm[3]!), int.parse(dm[2]!), int.parse(dm[1]!), int.parse(tm[1]!), int.parse(tm[2]!));
@@ -604,7 +616,7 @@ class AppState extends ChangeNotifier {
     }
     loading = true;
     syncLog.clear();
-    status = games.isEmpty ? 'Loading games...' : 'Updating...';
+    status = games.isEmpty ? 'Loading schedule...' : 'Updating schedule...';
     notifyListeners();
     final client = http.Client();
     var ok = 0, bad = 0;
@@ -621,7 +633,7 @@ class AppState extends ChangeNotifier {
           notifyListeners();
         } on TimeoutException {
           bad++;
-          _log('$label: too slow, kept saved games');
+          _log('$label: timed out, saved schedule kept');
         } catch (e) {
           bad++;
           _log('$label: $e');
@@ -636,12 +648,12 @@ class AppState extends ChangeNotifier {
       await Future.wait(jobs);
       if (ok > 0) lastSync = DateTime.now();
       status = ok == 0
-          ? 'Could not reach the sources. Showing saved games.'
+          ? 'Unable to reach the data sources. Showing the saved schedule.'
           : bad == 0
-              ? 'Updated just now: ${games.length} games.'
-              : 'Updated: ${games.length} games ($bad source(s) did not answer, saved data kept).';
+              ? 'Updated just now · ${games.length} games'
+              : 'Updated · ${games.length} games ($bad source(s) did not respond; saved data kept)';
     } catch (e) {
-      status = 'Update failed, showing saved games.';
+      status = 'Update failed. Showing the saved schedule.';
       _log('$e');
     } finally {
       client.close();
@@ -674,10 +686,14 @@ class AppState extends ChangeNotifier {
   }
 }
 
+/// Opponent without the "(home)"/"(away)" suffix, and the venue word for the team followed.
+String oppName(Game g) => g.opponent.replaceFirst(RegExp(r'\s*\((home|away)\)$'), '');
+String? venue(Game g) => g.opponent.endsWith('(home)') ? 'Home' : (g.opponent.endsWith('(away)') ? 'Away' : null);
+
 String compText(Game g) => g.compName.isEmpty || g.compName == g.comp ? g.comp : '${g.comp} (${g.compName})';
 
 String gameLine(AppState s, Game g) =>
-    '${hm(g.start)} ${g.team} vs ${g.opponent}\n${g.sport} · ${compText(g)} · ${s.channelOf(g) ?? 'Channel not confirmed'}';
+    '${hm(g.start)} ${g.team} vs ${oppName(g)}${venue(g) == null ? '' : ' (${venue(g)})'}\n${g.sport} · ${compText(g)} · ${s.channelOf(g) ?? 'TV channel TBC'}';
 
 // ---------- Notifications ----------
 
@@ -740,8 +756,8 @@ Future<void> scheduleAlerts(AppState s) async {
         final d = DateTime(day.year, day.month, day.day + j);
         if (s.eveningGames(d, useFilters: false).isEmpty) free.add(dayLabel(d));
       }
-      await _at(sun, 100000000 + num, 'Your week',
-          free.isEmpty ? 'No free evening this week.' : 'Free evenings this week: ${free.join(', ')}');
+      await _at(sun, 100000000 + num, 'Your week ahead',
+          free.isEmpty ? 'No free evenings this week.' : 'Free evenings this week: ${free.join(', ')}');
     }
   }
 }

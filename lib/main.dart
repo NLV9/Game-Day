@@ -101,7 +101,7 @@ class _SplashState extends State<Splash> {
             SizedBox(height: 4),
             Text('Game Day Schedule', style: TextStyle(color: yellow, fontSize: 24, fontWeight: FontWeight.w700)),
             SizedBox(height: 28),
-            Text('Your teams. Your nights.', style: TextStyle(color: Colors.white, fontSize: 15)),
+            Text('Your teams. Your evenings.', style: TextStyle(color: Colors.white, fontSize: 15)),
           ]),
         ),
       );
@@ -193,12 +193,13 @@ Widget gameCard(BuildContext c, Game g) {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('${g.team} vs ${g.opponent}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              Text('${g.team} vs ${oppName(g)}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 6),
               Wrap(spacing: 6, runSpacing: 6, children: [
+                if (venue(g) != null) tag(c, venue(g)!),
                 tag(c, g.sport),
                 tag(c, g.comp),
-                tag(c, ch ?? 'Channel not confirmed', filled: ch != null),
+                tag(c, ch ?? 'TV channel TBC', filled: ch != null),
               ]),
             ]),
           ),
@@ -305,7 +306,7 @@ class GamesTab extends StatelessWidget {
           child: ExpansionTile(
             shape: const Border(),
             collapsedShape: const Border(),
-            title: Text(app.status ?? 'Showing saved games. Tap refresh to update.', style: const TextStyle(fontSize: 14)),
+            title: Text(app.status ?? 'Showing the saved schedule. Tap refresh to update.', style: const TextStyle(fontSize: 14)),
             subtitle: Text(
               'Game Day $appVersion · ${app.lastSync == null ? 'never updated' : 'last update ${dayLabel(app.lastSync!)} ${hm(app.lastSync!)}'}',
               style: const TextStyle(fontSize: 12),
@@ -342,7 +343,7 @@ class GamesTab extends StatelessWidget {
         if (rows.isEmpty)
           const Padding(
             padding: EdgeInsets.all(28),
-            child: Text('No games match these filters in this date range. Pull down to sync, or widen the range.', textAlign: TextAlign.center),
+            child: Text('No games match the selected filters and dates. Adjust the filters or the date range, or pull down to refresh.', textAlign: TextAlign.center),
           ),
       ]),
     );
@@ -386,7 +387,7 @@ class _FreeTabState extends State<FreeTab> {
             builder: (_) => ListView(shrinkWrap: true, padding: const EdgeInsets.all(14), children: [
               Text(dayLabel(date), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
               const SizedBox(height: 8),
-              if (gs.isEmpty) const Text('No games. Free evening.'),
+              if (gs.isEmpty) const Text('No games: free evening.'),
               for (final g in gs) gameCard(c, g),
             ]),
           );
@@ -462,8 +463,8 @@ class _FreeTabState extends State<FreeTab> {
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Sunday summary', style: TextStyle(fontWeight: FontWeight.w700)),
-            Text('${dayLabel(ws)} to ${dayLabel(we)} · all teams, no filters'),
+            const Text('Weekly summary (Sunday to Saturday)', style: TextStyle(fontWeight: FontWeight.w700)),
+            Text('${dayLabel(ws)} to ${dayLabel(we)} · all teams, filters not applied'),
             Row(children: [
               TextButton(onPressed: () => setState(() => w--), child: const Text('Previous week')),
               TextButton(onPressed: () => setState(() => w++), child: const Text('Next week')),
@@ -474,7 +475,7 @@ class _FreeTabState extends State<FreeTab> {
       ...weekRows,
       const SizedBox(height: 8),
       const FilterPanel(),
-      Card(child: Padding(padding: const EdgeInsets.all(14), child: Text('$n free evenings in the next 3 months with these filters.', style: const TextStyle(fontWeight: FontWeight.w700)))),
+      Card(child: Padding(padding: const EdgeInsets.all(14), child: Text('$n free evenings in the next three months (filters applied).', style: const TextStyle(fontWeight: FontWeight.w700)))),
       Row(children: [
         Container(width: 12, height: 12, color: yellow),
         const SizedBox(width: 6),
@@ -538,7 +539,7 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (c) => StatefulBuilder(
         builder: (c, set) => AlertDialog(
-          title: const Text('Add a calendar link'),
+          title: const Text('Add a calendar'),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               drop('Team', team, app.teamNames, (v) => set(() => team = v)),
@@ -573,7 +574,7 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (c) => StatefulBuilder(
         builder: (c, set) => AlertDialog(
-          title: const Text('Add a game'),
+          title: const Text('Add a game manually'),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               drop('Team', team, app.teamNames, (v) => set(() => team = v)),
@@ -636,11 +637,11 @@ class _SettingsPageState extends State<SettingsPage> {
               onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TeamsPage())),
             ),
             const SizedBox(height: 4),
-            Text('Choose the teams you follow. Now: ${app.teamNames.join(', ')}'),
+            Text('Followed teams: ${app.teamNames.join(', ')}'),
             const SizedBox(height: 22),
-            const Text('Extra calendar links (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('Additional calendars (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text("The teams you follow load automatically. If you want a schedule we do not have, paste an .ics or webcal:// calendar link here, choose the team and sport, then tap Sync now."),
+            const Text("Schedules for your teams load automatically. To add a schedule that is not available, paste an .ics or webcal:// calendar link, choose the team and sport, then tap Update now."),
             for (var i = 0; i < app.cals.length; i++)
               ListTile(
                 contentPadding: EdgeInsets.zero,
@@ -657,17 +658,17 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             Align(
               alignment: Alignment.centerLeft,
-              child: TextButton.icon(onPressed: () => addCal(context), icon: const Icon(Icons.add), label: const Text('Add a calendar link')),
+              child: TextButton.icon(onPressed: () => addCal(context), icon: const Icon(Icons.add), label: const Text('Add a calendar')),
             ),
             FilledButton.icon(
               onPressed: app.loading ? null : app.sync,
               icon: const Icon(Icons.sync),
-              label: const Text('Sync now'),
+              label: const Text('Update now'),
             ),
             const SizedBox(height: 22),
-            const Text('Football schedules (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('Football data key (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text('Optional: a free football-data.org key adds league and Champions League games for Real Madrid, Liverpool and Dortmund.'),
+            const Text('Optional: a free football-data.org key adds league and Champions League fixtures for Real Madrid, Liverpool and Dortmund.'),
             TextField(
               controller: tokenC,
               decoration: const InputDecoration(labelText: 'football-data.org API key'),
@@ -677,13 +678,13 @@ class _SettingsPageState extends State<SettingsPage> {
               },
             ),
             const SizedBox(height: 22),
-            const Text('Free evening window', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('Evening window', style: TextStyle(fontWeight: FontWeight.w700)),
             hourDrop('Evening starts', app.evStart, 15, 21, (v) => app.evStart = v),
             hourDrop('Evening ends', app.evEnd, 21, 24, (v) => app.evEnd = v),
             const SizedBox(height: 22),
-            const Text('TV channels', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('TV channels in Israel', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text('One rule per line: a word from the team or competition, then = and the channel that holds the rights in Israel. First match wins.'),
+            const Text('One rule per line: a keyword from the team or competition, an equals sign, then the channel that holds the broadcast rights in Israel. The first matching rule applies.'),
             TextField(
               controller: mapC,
               minLines: 4,
@@ -695,8 +696,8 @@ class _SettingsPageState extends State<SettingsPage> {
               },
             ),
             const SizedBox(height: 22),
-            const Text('Games added by hand', style: TextStyle(fontWeight: FontWeight.w700)),
-            const Text('Use this for handball, volleyball or anything the sources miss.'),
+            const Text('Manual games', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('Use this for handball, volleyball or any game the sources do not cover.'),
             for (var i = 0; i < app.manual.length; i++)
               ListTile(
                 contentPadding: EdgeInsets.zero,
@@ -713,7 +714,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             Align(
               alignment: Alignment.centerLeft,
-              child: TextButton.icon(onPressed: () => addGame(context), icon: const Icon(Icons.add), label: const Text('Add a game')),
+              child: TextButton.icon(onPressed: () => addGame(context), icon: const Icon(Icons.add), label: const Text('Add a game manually')),
             ),
           ]),
         ),

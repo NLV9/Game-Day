@@ -59,7 +59,7 @@ class _TeamsPageState extends State<TeamsPage> {
       body.add(const SizedBox(height: 10));
       final res = searchClubs(q.text, sport);
       if (q.text.trim().isEmpty) {
-        body.add(const Text('Choose the sport above, then type the name.'));
+        body.add(const Text('Select a sport, then enter a team name.'));
       } else if (res.isEmpty) {
         body.add(const Text('No team found.'));
       } else {
@@ -70,7 +70,7 @@ class _TeamsPageState extends State<TeamsPage> {
     } else if (leagues.isEmpty) {
       body.add(const Padding(
         padding: EdgeInsets.symmetric(vertical: 20),
-        child: Text('No live source for this sport yet, so no teams can be followed. You can still add single games by hand in Settings.'),
+        child: Text('Live schedules are not yet available for this sport. You can add individual games manually in Settings.'),
       ));
     } else {
       body.add(const Text('League', style: TextStyle(fontWeight: FontWeight.w700)));
@@ -78,7 +78,7 @@ class _TeamsPageState extends State<TeamsPage> {
         for (final l in leagues) pick(context, l, l == lg, () => setState(() => league = l)),
       ]));
       body.add(const SizedBox(height: 10));
-      body.add(const Text('Teams (tick to follow)', style: TextStyle(fontWeight: FontWeight.w700)));
+      body.add(const Text('Teams (select to follow)', style: TextStyle(fontWeight: FontWeight.w700)));
       for (final c in clubsIn(sport, lg!)) {
         body.add(teamTile(c));
       }
@@ -87,7 +87,7 @@ class _TeamsPageState extends State<TeamsPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('My Teams')),
       body: ListView(padding: const EdgeInsets.all(16), children: [
-        const Text('Following', style: TextStyle(fontWeight: FontWeight.w700)),
+        const Text('Followed teams', style: TextStyle(fontWeight: FontWeight.w700)),
         Wrap(spacing: 6, runSpacing: 4, children: [
           for (final c in app.followedClubs)
             InputChip(
@@ -96,7 +96,7 @@ class _TeamsPageState extends State<TeamsPage> {
               onDeleted: () => toggle(c),
             ),
         ]),
-        if (app.followedClubs.isEmpty) const Text('No team followed yet.'),
+        if (app.followedClubs.isEmpty) const Text('You are not following any team yet.'),
         const SizedBox(height: 14),
         Wrap(spacing: 6, children: [
           pick(context, 'By league', !bySearch, () => setState(() => bySearch = false)),
