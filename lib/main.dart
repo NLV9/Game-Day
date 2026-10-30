@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'catalog.dart';
 import 'data.dart';
+import 'logo.dart';
+import 'teams_page.dart';
 import 'models.dart';
 
 final app = AppState();
@@ -62,11 +65,45 @@ class GameDayApp extends StatelessWidget {
   const GameDayApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Game Day',
+        title: 'GDS - Game Day Schedule',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(false),
         darkTheme: buildTheme(true),
-        home: const Home(),
+        home: const Splash(),
+      );
+}
+
+/// Opening screen: shows the app name for a moment, then the games list.
+class Splash extends StatefulWidget {
+  const Splash({super.key});
+  @override
+  State<Splash> createState() => _SplashState();
+}
+
+class _SplashState extends State<Splash> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 1600), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const Home()));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => const Scaffold(
+        backgroundColor: blue,
+        body: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            GdsLogo(size: 150),
+            SizedBox(height: 18),
+            Text('GDS', style: TextStyle(color: yellow, fontSize: 56, fontWeight: FontWeight.w900)),
+            SizedBox(height: 4),
+            Text('Game Day Schedule', style: TextStyle(color: yellow, fontSize: 24, fontWeight: FontWeight.w700)),
+            SizedBox(height: 28),
+            Text('Your teams. Your nights.', style: TextStyle(color: Colors.white, fontSize: 15)),
+          ]),
+        ),
       );
 }
 
@@ -84,9 +121,12 @@ class _HomeState extends State<Home> {
         listenable: app,
         builder: (context, _) => Scaffold(
           appBar: AppBar(
-            title: Text(tab == 0 ? 'Game Day' : 'Free nights'),
+            title: Text(tab == 0 ? 'GDS' : 'Free nights'),
             actions: [
-              IconButton(icon: const Icon(Icons.refresh), tooltip: 'Sync now', onPressed: app.loading ? null : app.sync),
+              if (app.loading)
+                const Padding(padding: EdgeInsets.symmetric(horizontal: 12), child: GdsLogo(size: 30, spin: true))
+              else
+                IconButton(icon: const Icon(Icons.refresh), tooltip: 'Update now', onPressed: app.sync),
               IconButton(
                 icon: const Icon(Icons.settings),
                 tooltip: 'Settings',
@@ -192,7 +232,7 @@ class FilterPanel extends StatelessWidget {
           childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
           expandedCrossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            group(context, 'Teams', teams, app.fTeams),
+            group(context, 'Teams', app.teamNames, app.fTeams),
             group(context, 'Sport', sports, app.fSports),
             group(context, 'Competition', comps, app.fComps),
             const Padding(padding: EdgeInsets.only(top: 10, bottom: 4), child: Text('TV broadcast')),
@@ -490,7 +530,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ]);
 
   Future<void> addCal(BuildContext context) async {
-    var team = teams[1], sport = sports[0];
+    var team = app.teamNames.first, sport = sports[0];
     final url = TextEditingController();
     await showDialog(
       context: context,
@@ -499,7 +539,7 @@ class _SettingsPageState extends State<SettingsPage> {
           title: const Text('Add a calendar link'),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              drop('Team', team, teams, (v) => set(() => team = v)),
+              drop('Team', team, app.teamNames, (v) => set(() => team = v)),
               drop('Sport', sport, sports, (v) => set(() => sport = v)),
               TextField(controller: url, decoration: const InputDecoration(labelText: 'Calendar link (.ics or webcal://)')),
             ]),
@@ -523,7 +563,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> addGame(BuildContext context) async {
-    var team = teams[0], sport = sports[1], comp = comps[0];
+    var team = app.teamNames.first, sport = sports[1], comp = comps[0];
     final opp = TextEditingController(), ch = TextEditingController();
     final t0 = DateTime.now().add(const Duration(days: 1));
     var when = DateTime(t0.year, t0.month, t0.day, 20);
@@ -534,7 +574,7 @@ class _SettingsPageState extends State<SettingsPage> {
           title: const Text('Add a game'),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              drop('Team', team, teams, (v) => set(() => team = v)),
+              drop('Team', team, app.teamNames, (v) => set(() => team = v)),
               drop('Sport', sport, sports, (v) => set(() => sport = v)),
               drop('Competition', comp, comps, (v) => set(() => comp = v)),
               TextField(controller: opp, decoration: const InputDecoration(labelText: 'Opponent')),
@@ -587,9 +627,18 @@ class _SettingsPageState extends State<SettingsPage> {
         builder: (context, _) => Scaffold(
           appBar: AppBar(title: const Text('Settings')),
           body: ListView(padding: const EdgeInsets.all(16), children: [
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: yellow, foregroundColor: navy, padding: const EdgeInsets.all(16)),
+              icon: const Icon(Icons.groups),
+              label: const Text('My Teams', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TeamsPage())),
+            ),
+            const SizedBox(height: 4),
+            Text('Choose the teams you follow. Now: ${app.teamNames.join(', ')}'),
+            const SizedBox(height: 22),
             const Text('Extra calendar links (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text("Liverpool, Real Madrid, Dortmund and Maccabi Tel Aviv (football) are built in and load automatically. You can optionally add more team calendars here: paste an .ics or webcal:// link, choose the team and sport, then tap Sync now."),
+            const Text("The teams you follow load automatically. If you want a schedule we do not have, paste an .ics or webcal:// calendar link here, choose the team and sport, then tap Sync now."),
             for (var i = 0; i < app.cals.length; i++)
               ListTile(
                 contentPadding: EdgeInsets.zero,

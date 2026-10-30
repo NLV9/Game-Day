@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
+import 'catalog.dart';
 import 'models.dart';
 
 /// Every source gets at most this long. A slow source never blocks the others or the app.
@@ -17,7 +18,7 @@ Future<http.Response> _get(http.Client c, String url, {Map<String, String>? head
 
 /// Short report of what each source returned (shown only under "Details").
 final List<String> syncLog = [];
-const appVersion = 'v6';
+const appVersion = 'v8';
 void _log(String line) => syncLog.add(line);
 
 String classify(String name, {String? type, String? code}) {
@@ -61,16 +62,6 @@ Future<List<Game>> fetchFootballDataTeam(http.Client c, String token, String tea
 const footballDataIds = {'Real Madrid': 86, 'Liverpool': 64, 'Dortmund': 4};
 
 // ---------- Calendar links (.ics) ----------
-
-/// Built-in sources, always on. FotMob publishes a public fixtures calendar for every club
-/// (league, cups and European games). The numbers are FotMob's team ids.
-const builtInCals = [
-  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/8650.ics', team: 'Liverpool', sport: 'Football'),
-  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/8633.ics', team: 'Real Madrid', sport: 'Football'),
-  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/9789.ics', team: 'Dortmund', sport: 'Football'),
-  CalSource(url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/7855.ics', team: 'Maccabi Tel Aviv', sport: 'Football'),
-];
-
 
 const _teamKeys = {
   'Maccabi Tel Aviv': ['maccabi tel aviv', 'maccabi ta', 'מכבי תל אביב', 'מכבי ת"א'],
@@ -122,7 +113,7 @@ Game? _icsGame(Map<String, String> ev, CalSource src) {
     hint = s.substring(0, ci).trim();
     s = s.substring(ci + 2);
   }
-  final keys = _teamKeys[src.team] ?? [src.team.toLowerCase()];
+  final keys = src.keys.isNotEmpty ? src.keys : (_teamKeys[src.team] ?? [src.team.toLowerCase()]);
   bool mine(String t) {
     final n = t.toLowerCase().replaceAll('-', ' ');
     return keys.any((k) => n.contains(k));
@@ -158,7 +149,7 @@ Game? _icsGame(Map<String, String> ev, CalSource src) {
   return Game(
     team: src.team,
     sport: src.sport,
-    comp: classify('$hint $cats ${desc.length > 120 ? desc.substring(0, 120) : desc}'),
+    comp: src.national ? 'International' : classify('$hint $cats ${desc.length > 120 ? desc.substring(0, 120) : desc}'),
     compName: compName,
     opponent: opponent,
     start: start,
@@ -210,6 +201,7 @@ List<Game> parseIcs(String text, CalSource src) {
 }
 
 /// Runs in a background isolate so reading a big file never freezes the screen.
+/// For built-in teams it also checks that the calendar really belongs to that team.
 String _parseIcsJob(Map<String, String> a) {
   final body = a['text']!;
   if (body.contains('TZID=')) {
@@ -217,20 +209,34 @@ String _parseIcsJob(Map<String, String> a) {
       tzdata.initializeTimeZones();
     } catch (_) {}
   }
-  final src = CalSource(url: '', team: a['team']!, sport: a['sport']!);
-  return jsonEncode(parseIcs(body, src).map((g) => g.toJson()).toList());
+  final keys = (a['keys'] ?? '').isEmpty ? <String>[] : a['keys']!.split('|');
+  final src = CalSource(url: '', team: a['team']!, sport: a['sport']!, keys: keys, national: a['national'] == '1');
+  final games = parseIcs(body, src);
+  if (a['verify'] == '1' && games.isNotEmpty) {
+    final ok = games.where((g) => g.opponent.endsWith('(home)') || g.opponent.endsWith('(away)')).length;
+    if (ok * 2 < games.length) return 'MISMATCH';
+  }
+  return jsonEncode(games.map((g) => g.toJson()).toList());
 }
 
 List<Game> _fromJsonText(String t) =>
     (jsonDecode(t) as List).map((e) => Game.fromJson(Map<String, dynamic>.from(e as Map))).toList();
 
-Future<List<Game>> fetchCalendar(http.Client c, CalSource s) async {
+Future<List<Game>> fetchCalendar(http.Client c, CalSource s, {bool verify = false}) async {
   final url = s.url.trim().replaceFirst(RegExp(r'^webcal://', caseSensitive: false), 'https://');
   final r = await _get(c, url);
   if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
   final body = utf8.decode(r.bodyBytes, allowMalformed: true);
   if (!body.contains('BEGIN:VCALENDAR')) throw 'not a calendar file (the link may need a login)';
-  final text = await compute(_parseIcsJob, <String, String>{'text': body, 'team': s.team, 'sport': s.sport});
+  final text = await compute(_parseIcsJob, <String, String>{
+    'text': body,
+    'team': s.team,
+    'sport': s.sport,
+    'keys': s.keys.join('|'),
+    'national': s.national ? '1' : '0',
+    'verify': verify ? '1' : '0',
+  });
+  if (text == 'MISMATCH') throw 'schedule does not match the team name, ignored';
   return _fromJsonText(text);
 }
 
@@ -246,39 +252,135 @@ List<Game> mergeGames(List<Game> a, List<Game> b) {
 // ---------- EuroLeague (Maccabi Tel Aviv basketball) ----------
 
 /// Runs in a background isolate: the EuroLeague file is large (about 700 KB).
-String _parseEuroJob(String body) {
+/// [a] holds the page text and a code-to-name map of the clubs being followed.
+String _parseEuroJob(Map<String, String> a) {
+  final codes = (jsonDecode(a['codes']!) as Map).map((k, v) => MapEntry('$k', '$v'));
   final out = <Map<String, dynamic>>[];
-  for (final g in (jsonDecode(body)['data'] as List)) {
+  for (final g in (jsonDecode(a['body']!)['data'] as List)) {
     if (g['played'] == true) continue;
     final home = g['local']['club'], away = g['road']['club'];
-    final homeMine = home['code'] == 'TEL';
-    if (!homeMine && away['code'] != 'TEL') continue;
     final start = DateTime.tryParse('${g['utcDate']}')?.toLocal();
     if (start == null) continue;
-    final opp = homeMine ? away : home;
-    out.add(Game(
-      team: 'Maccabi Tel Aviv',
-      sport: 'Basketball',
-      comp: 'Europe',
-      compName: 'EuroLeague round ${g['round']}${g['confirmedHour'] == false ? ' (time TBC)' : ''}',
-      opponent: '${opp['abbreviatedName'] ?? opp['name']} (${homeMine ? 'home' : 'away'})',
-      start: start,
-    ).toJson());
+    for (final side in [true, false]) {
+      final mine = side ? home : away, opp = side ? away : home;
+      final name = codes['${mine['code']}'];
+      if (name == null) continue;
+      out.add(Game(
+        team: name,
+        sport: 'Basketball',
+        comp: 'Europe',
+        compName: 'EuroLeague round ${g['round']}${g['confirmedHour'] == false ? ' (time TBC)' : ''}',
+        opponent: '${opp['abbreviatedName'] ?? opp['name']} (${side ? 'home' : 'away'})',
+        start: start,
+      ).toJson());
+    }
   }
   return jsonEncode(out);
 }
 
 /// Official EuroLeague schedule (no key needed). Times come from the UTC field, so they are exact.
-Future<List<Game>> fetchEuroLeague(http.Client c) async {
+Future<List<Game>> fetchEuroLeague(http.Client c, Map<String, String> codes) async {
   final now = DateTime.now();
   final season = 'E${now.month >= 7 ? now.year : now.year - 1}';
   final r = await _get(c, 'https://api-live.euroleague.net/v2/competitions/E/seasons/$season/games');
   if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
-  final text = await compute(_parseEuroJob, utf8.decode(r.bodyBytes));
+  final text = await compute(_parseEuroJob, <String, String>{
+    'body': utf8.decode(r.bodyBytes),
+    'codes': jsonEncode(codes),
+  });
+  return _fromJsonText(text);
+}
+
+// ---------- Israeli basketball league (official league site) ----------
+
+/// Runs in a background isolate. The league site is plain HTML; every row reads
+/// "date, time, arena, [TV], home team, away team, ...", so the page is turned into a list of
+/// text pieces and each row is read from them. Times on the site are Israel time.
+String _parseIlJob(Map<String, String> a) {
+  final names = (jsonDecode(a['names']!) as Map).map((k, v) => MapEntry('${k}'.toLowerCase(), '$v'));
+  var html = a['body']!;
+  html = html.replaceAll(RegExp(r'<(script|style)[^>]*>.*?</\1>', caseSensitive: false, dotAll: true), ' ');
+  html = html.replaceAll(RegExp(r'<[^>]+>'), '\n');
+  html = html.replaceAll('&nbsp;', ' ').replaceAll('&amp;', '&').replaceAll('&#39;', "'").replaceAll('&quot;', '"');
+  final toks = html
+      .split('\n')
+      .map((e) => e.replaceAll(RegExp(r'\s+'), ' ').trim())
+      .where((e) => e.isNotEmpty)
+      .toList();
+  try {
+    tzdata.initializeTimeZones();
+  } catch (_) {}
+  final loc = tz.getLocation('Asia/Jerusalem');
+  final dateRe = RegExp(r'^(\d{2})/(\d{2})/(\d{4})$');
+  final timeRe = RegExp(r'^(\d{1,2}):(\d{2})$');
+  final lead = RegExp(r'^\d{1,2}:\d{2}\s');
+  final headRe = RegExp(r'^game \d+$', caseSensitive: false);
+  final scoreRe = RegExp(r'^\d+\s*[-–:]\s*\d+$');
+  const junk = {'tickets', 'game zone', 'game-zone', 'gamezone', 'result', '-', '–', 'vs', 'live', 'details', 'buy', 'buy tickets', 'box score', 'stats', 'tv', 'arena', 'date', 'time', 'home', 'away'};
+  final out = <Map<String, dynamic>>[];
+  for (var i = 0; i < toks.length; i++) {
+    final dm = dateRe.firstMatch(toks[i]);
+    if (dm == null) continue;
+    final row = <String>[];
+    for (var j = i + 1; j < toks.length && row.length < 14; j++) {
+      if (dateRe.hasMatch(toks[j]) || headRe.hasMatch(toks[j])) break;
+      row.add(toks[j]);
+    }
+    if (row.isEmpty) continue;
+    final tm = timeRe.firstMatch(row[0]);
+    if (tm == null) continue; // kick-off time not set yet
+    final rest = row
+        .skip(1)
+        .where((t) => !timeRe.hasMatch(t) && !lead.hasMatch(t) && !junk.contains(t.toLowerCase()) && !scoreRe.hasMatch(t))
+        .toList();
+    for (var k = 0; k < rest.length; k++) {
+      final mine = names[rest[k].toLowerCase()];
+      if (mine == null) continue;
+      String opp;
+      bool home;
+      if (k + 1 < rest.length && rest[k + 1].length >= 4) {
+        opp = rest[k + 1];
+        home = true;
+      } else if (k >= 1) {
+        opp = rest[k - 1];
+        home = false;
+      } else {
+        continue;
+      }
+      final tvIdx = home ? k - 1 : k - 2;
+      final tv = tvIdx >= 0 && rest[tvIdx].length <= 24 ? rest[tvIdx] : null;
+      final t = tz.TZDateTime(loc, int.parse(dm[3]!), int.parse(dm[2]!), int.parse(dm[1]!), int.parse(tm[1]!), int.parse(tm[2]!));
+      out.add(Game(
+        team: mine,
+        sport: 'Basketball',
+        comp: 'League',
+        compName: 'Israeli Winner League',
+        opponent: '$opp (${home ? 'home' : 'away'})',
+        start: DateTime.fromMillisecondsSinceEpoch(t.millisecondsSinceEpoch),
+        channel: tv,
+      ).toJson());
+    }
+  }
+  return jsonEncode(out);
+}
+
+Future<List<Game>> fetchIsraeliLeague(http.Client c, Map<String, String> names) async {
+  final r = await _get(c, 'https://basket.co.il/results.asp?lang=en');
+  if (r.statusCode != 200) throw 'HTTP ${r.statusCode}';
+  final text = await compute(_parseIlJob, <String, String>{
+    'body': utf8.decode(r.bodyBytes, allowMalformed: true),
+    'names': jsonEncode(names),
+  });
   return _fromJsonText(text);
 }
 
 // ---------- App state ----------
+
+class _Job {
+  final String key, label;
+  final Future<List<Game>> Function(http.Client) run;
+  const _Job(this.key, this.label, this.run);
+}
 
 class AppState extends ChangeNotifier {
   late SharedPreferences _p;
@@ -289,6 +391,7 @@ class AppState extends ChangeNotifier {
   List<CalSource> cals = [];
   String token = '', channelMap = '', tv = 'all';
   int evStart = 18, evEnd = 23;
+  Set<String> followed = {...defaultFollowed}; // Club.id values
   Set<String> fTeams = {...teams}, fSports = {...sports}, fComps = {...comps};
   DateTimeRange? range;
   bool loading = false;
@@ -302,9 +405,15 @@ class AppState extends ChangeNotifier {
     tv = _p.getString('tv') ?? 'all';
     evStart = _p.getInt('evs') ?? 18;
     evEnd = _p.getInt('eve') ?? 23;
+    final ids = catalog.map((c) => c.id).toSet();
+    followed = (_p.getStringList('follow') ?? defaultFollowed).where(ids.contains).toSet(); // blocked teams never load
     fTeams = (_p.getStringList('ft') ?? teams).toSet();
     fSports = (_p.getStringList('fs') ?? sports).toSet();
     fComps = (_p.getStringList('fc') ?? comps).toSet();
+    if (!_p.containsKey('fcv')) {
+      fComps.add('International'); // new competition type added in this version
+      _p.setInt('fcv', 1);
+    }
     games = _read('games');
     manual = _read('manual');
     bySrc = _readBySrc();
@@ -353,6 +462,7 @@ class AppState extends ChangeNotifier {
     _p.setString('tv', tv);
     _p.setInt('evs', evStart);
     _p.setInt('eve', evEnd);
+    _p.setStringList('follow', followed.toList());
     _p.setStringList('ft', fTeams.toList());
     _p.setStringList('fs', fSports.toList());
     _p.setStringList('fc', fComps.toList());
@@ -382,6 +492,7 @@ class AppState extends ChangeNotifier {
   }
 
   bool pass(Game g) =>
+      !isBlocked(g.team) &&
       fTeams.contains(g.team) &&
       fSports.contains(g.sport) &&
       fComps.contains(g.comp) &&
@@ -405,12 +516,70 @@ class AppState extends ChangeNotifier {
     save();
   }
 
+  List<Club> get followedClubs => [for (final c in catalog) if (followed.contains(c.id)) c];
+
+  /// Names of the followed teams, for the filters and the "add a game" form.
+  List<String> get teamNames {
+    final n = {for (final c in followedClubs) c.name}.toList()..sort();
+    return n.isEmpty ? ['Other'] : n;
+  }
+
+  bool isFollowed(Club c) => followed.contains(c.id);
+
+  void toggleFollow(Club c) {
+    if (isBlocked(c.name, c.country)) return;
+    if (followed.contains(c.id)) {
+      followed.remove(c.id);
+      if (!followedClubs.any((x) => x.name == c.name)) fTeams.remove(c.name);
+      _rebuild();
+    } else {
+      followed.add(c.id);
+      fTeams.add(c.name);
+    }
+    save();
+  }
+
+  /// What to ask the internet for, one job per source. Used by sync and by the "is it stale" check.
+  List<_Job> _plan() {
+    final jobs = <_Job>[];
+    final seen = <String>{};
+    final codes = <String, String>{};
+    final il = <String, String>{};
+    for (final c in followedClubs) {
+      if (c.fm != null && seen.add('fm:${c.fm}')) {
+        final src = CalSource(
+          url: 'https://pub.fotmob.com/prod/pub/api/v2/calendar/team/${c.fm}.ics',
+          team: c.name,
+          sport: c.sport,
+          keys: c.keys,
+          national: c.league == 'National teams',
+        );
+        jobs.add(_Job('fm:${c.fm}', '${c.name} ${c.sport}', (h) => fetchCalendar(h, src, verify: true)));
+      }
+      if (c.el != null) codes[c.el!] = c.name;
+      if (c.il != null) il[c.il!] = c.name;
+    }
+    if (codes.isNotEmpty) jobs.add(_Job('euroleague', 'EuroLeague', (h) => fetchEuroLeague(h, codes)));
+    if (il.isNotEmpty) jobs.add(_Job('il:${il.values.toList()..sort()}', 'Israeli basketball league', (h) => fetchIsraeliLeague(h, il)));
+    for (final s in cals) {
+      jobs.add(_Job('cal:${s.url}', '${s.team} ${s.sport} calendar', (h) => fetchCalendar(h, s)));
+    }
+    if (token.isNotEmpty) {
+      for (final e in footballDataIds.entries) {
+        jobs.add(_Job('fd:${e.key}', 'football-data.org ${e.key}', (h) => fetchFootballDataTeam(h, token, e.key, e.value)));
+      }
+    }
+    return jobs;
+  }
+
   /// Combines the last good result of every source into the list the screens show.
   void _rebuild() {
+    final active = _plan().map((j) => j.key).toSet();
+    bySrc.removeWhere((k, _) => !active.contains(k));
     final cutoff = DateTime.now().subtract(const Duration(hours: 3));
     var found = <Game>[];
     for (final list in bySrc.values) {
-      found = mergeGames(found, list.where((g) => g.start.isAfter(cutoff)).toList());
+      found = mergeGames(found, list.where((g) => g.start.isAfter(cutoff) && !isBlocked(g.team)).toList());
     }
     games = found;
     _allCache = null;
@@ -419,9 +588,18 @@ class AppState extends ChangeNotifier {
   /// Refresh from the internet. The screen keeps showing the saved games meanwhile, and each
   /// source updates the list the moment it answers. No source may take longer than 5 seconds.
   /// Without [force] (app start) it only runs when nothing is saved or the data is over 12 hours old.
+  bool _again = false;
+
   Future<void> sync({bool force = true}) async {
-    if (loading) return;
-    if (!force && games.isNotEmpty && lastSync != null && DateTime.now().difference(lastSync!).inHours < 12) {
+    if (loading) {
+      if (force) _again = true; // run once more when the current round ends
+      return;
+    }
+    if (!force &&
+        games.isNotEmpty &&
+        lastSync != null &&
+        DateTime.now().difference(lastSync!).inHours < 12 &&
+        _plan().every((j) => bySrc.containsKey(j.key))) {
       return;
     }
     loading = true;
@@ -452,14 +630,8 @@ class AppState extends ChangeNotifier {
     }
 
     try {
-      for (final s in [...builtInCals, ...cals]) {
-        add('cal:${s.url}', '${s.team} ${s.sport} calendar', () => fetchCalendar(client, s));
-      }
-      add('euroleague', 'EuroLeague, Maccabi basketball', () => fetchEuroLeague(client));
-      if (token.isNotEmpty) {
-        for (final e in footballDataIds.entries) {
-          add('fd:${e.key}', 'football-data.org ${e.key}', () => fetchFootballDataTeam(client, token, e.key, e.value));
-        }
+      for (final j in _plan()) {
+        add(j.key, j.label, () => j.run(client));
       }
       await Future.wait(jobs);
       if (ok > 0) lastSync = DateTime.now();
@@ -477,6 +649,10 @@ class AppState extends ChangeNotifier {
       save();
     }
     _alertsInBackground();
+    if (_again) {
+      _again = false;
+      sync();
+    }
   }
 
   bool _scheduling = false;

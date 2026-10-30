@@ -1,6 +1,6 @@
 const teams = ['Maccabi Tel Aviv', 'Real Madrid', 'Liverpool', 'Dortmund'];
 const sports = ['Football', 'Basketball', 'Handball', 'Volleyball'];
-const comps = ['League', 'Champions League', 'Domestic cup', 'Europe'];
+const comps = ['League', 'Champions League', 'Domestic cup', 'Europe', 'International'];
 const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const _mo = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -40,7 +40,9 @@ DateTime dayOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 /// A team calendar link (.ics / webcal://) pasted by the user.
 class CalSource {
   final String url, team, sport;
-  const CalSource({required this.url, required this.team, required this.sport});
+  final bool national; // national team: its games are all 'International'
+  final List<String> keys; // lower-case name parts used to recognise the team in the calendar
+  const CalSource({required this.url, required this.team, required this.sport, this.keys = const [], this.national = false});
   Map<String, dynamic> toJson() => {'u': url, 't': team, 's': sport};
   factory CalSource.fromJson(Map<String, dynamic> j) => CalSource(url: j['u'], team: j['t'], sport: j['s']);
 }
