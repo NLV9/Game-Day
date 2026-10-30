@@ -15,7 +15,7 @@ recv = ('<receiver android:exported="false" android:name="com.dexterous.flutterl
         '<action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>\n</intent-filter>\n</receiver>\n')
 m = m.replace('<application', perms + '<application', 1)
 m = m.replace('</application>', recv + '</application>', 1)
-m = m.replace('android:label="game_day"', 'android:label="Game Day"')
+m = m.replace('android:label="game_day"', 'android:label="GDS"')
 open(mp, 'w', encoding='utf-8').write(m)
 
 # Gradle: core library desugaring + no code shrinking (shrinking breaks the notification plugin)
