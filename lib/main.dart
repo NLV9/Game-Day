@@ -629,7 +629,7 @@ class _SettingsPageState extends State<SettingsPage> {
         listenable: app,
         builder: (context, _) => Scaffold(
           appBar: AppBar(title: const Text('Settings')),
-          body: ListView(padding: const EdgeInsets.all(16), children: [
+          body: ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 120), children: [
             FilledButton.icon(
               style: FilledButton.styleFrom(backgroundColor: yellow, foregroundColor: navy, padding: const EdgeInsets.all(16)),
               icon: const Icon(Icons.groups),
@@ -638,6 +638,27 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 4),
             Text('Followed teams: ${app.teamNames.join(', ')}'),
+            const SizedBox(height: 22),
+            const Text('Manual games', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('Use this for handball, volleyball or any game the sources do not cover.'),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(onPressed: () => addGame(context), icon: const Icon(Icons.add), label: const Text('Add a game manually')),
+            ),
+            for (var i = 0; i < app.manual.length; i++)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('${app.manual[i].team} vs ${app.manual[i].opponent}'),
+                subtitle: Text('${dayLabel(app.manual[i].start)} ${hm(app.manual[i].start)} · ${app.manual[i].sport}'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: 'Remove',
+                  onPressed: () {
+                    app.manual.removeAt(i);
+                    app.save();
+                  },
+                ),
+              ),
             const SizedBox(height: 22),
             const Text('Additional calendars (optional)', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
@@ -694,27 +715,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 app.channelMap = v;
                 app.save();
               },
-            ),
-            const SizedBox(height: 22),
-            const Text('Manual games', style: TextStyle(fontWeight: FontWeight.w700)),
-            const Text('Use this for handball, volleyball or any game the sources do not cover.'),
-            for (var i = 0; i < app.manual.length; i++)
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text('${app.manual[i].team} vs ${app.manual[i].opponent}'),
-                subtitle: Text('${dayLabel(app.manual[i].start)} ${hm(app.manual[i].start)} · ${app.manual[i].sport}'),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  tooltip: 'Remove',
-                  onPressed: () {
-                    app.manual.removeAt(i);
-                    app.save();
-                  },
-                ),
-              ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(onPressed: () => addGame(context), icon: const Icon(Icons.add), label: const Text('Add a game manually')),
             ),
           ]),
         ),
